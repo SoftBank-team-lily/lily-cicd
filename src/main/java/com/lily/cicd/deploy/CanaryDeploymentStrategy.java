@@ -15,7 +15,6 @@ import io.fabric8.kubernetes.client.KubernetesClientTimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -81,8 +80,11 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
             List<String> logs) {
         int replicas = TRACK_STABLE.equals(plan.target()) ? TOTAL_REPLICAS : canaryReplicas();
         String name = deploymentName(command.appName(), plan.target());
-        Deployment deployment = buildDeployment(command, namespace, plan.target(), replicas, databaseEnv);
+        Map<String, String> plain = plainEnv(command, plan.target());
+        Map<String, String> secretEnv = DatabaseSecret.entries(databaseEnv, plain.keySet());
+        Deployment deployment = buildDeployment(command, namespace, plan.target(), replicas, plain, secretEnv);
         try {
+            DatabaseSecret.apply(k8sClient, namespace, command.appName(), name, secretEnv);
             k8sClient.apps().deployments().inNamespace(namespace).resource(deployment).createOrReplace();
             logs.add("canary: applied deployment " + name + " replicas=" + replicas
                     + " image=" + command.imageUrl());
@@ -207,7 +209,8 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
             String namespace,
             String track,
             int replicas,
-            Map<String, String> databaseEnv) {
+            Map<String, String> plain,
+            Map<String, String> secretEnv) {
         String appName = command.appName();
         String name = deploymentName(appName, track);
         Map<String, String> labels = Map.of("app", appName, "track", track);
@@ -239,7 +242,7 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
                                     .withName("http")
                                     .withContainerPort(command.targetPort())
                                 .endPort()
-                                .withEnv(containerEnv(command, track, databaseEnv))
+                                .withEnv(containerEnv(name, plain, secretEnv))
                                 .withReadinessProbe(httpProbe(readinessPath, command.targetPort()))
                                 .withLivenessProbe(httpProbe(livenessPath, command.targetPort()))
                                 .withStartupProbe(startupProbe(livenessPath, command.targetPort()))
@@ -260,16 +263,20 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
         return builder.build();
     }
 
-    private List<EnvVar> containerEnv(DeployCommand command, String track, Map<String, String> databaseEnv) {
+    private static Map<String, String> plainEnv(DeployCommand command, String track) {
         Map<String, String> env = new LinkedHashMap<>();
-        putAll(env, databaseEnv);
         putAll(env, command.extraEnv());
         env.put("APP_VERSION", firstNonBlank(command.appVersion(), "dev"));
         env.put("SERVER_PORT", Integer.toString(command.targetPort()));
         env.put("APP_COLOR", track);
+        return env;
+    }
 
-        List<EnvVar> vars = new ArrayList<>();
-        env.forEach((key, value) -> vars.add(new EnvVarBuilder().withName(key).withValue(value).build()));
+    /** DB 접속 정보는 Secret 참조로, 나머지는 값 그대로 넣는다 */
+    private static List<EnvVar> containerEnv(
+            String deploymentName, Map<String, String> plain, Map<String, String> secretEnv) {
+        List<EnvVar> vars = DatabaseSecret.refs(deploymentName, secretEnv.keySet());
+        plain.forEach((key, value) -> vars.add(new EnvVarBuilder().withName(key).withValue(value).build()));
         return vars;
     }
 

@@ -9,7 +9,6 @@ import com.lily.cicd.module.Slf4jDeployLog;
 import com.lily.cicd.release.DeployLock;
 import com.lily.cicd.release.ReleaseStore;
 import com.lily.cicd.schema.SchemaMigrator;
-import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
 import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
@@ -63,6 +62,7 @@ class CanaryDeploymentStrategyTest {
         client.services().inNamespace(NAMESPACE).delete();
         client.network().v1().ingresses().inNamespace(NAMESPACE).delete();
         client.configMaps().inNamespace(NAMESPACE).delete();
+        client.secrets().inNamespace(NAMESPACE).delete();
         client.leases().inNamespace(NAMESPACE).delete();
     }
 
@@ -266,11 +266,7 @@ class CanaryDeploymentStrategyTest {
         return client.apps().deployments().inNamespace(NAMESPACE).withName(name).get();
     }
 
-    private static String env(Deployment deployment, String name) {
-        return deployment.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
-                .filter(env -> name.equals(env.getName()))
-                .map(EnvVar::getValue)
-                .findFirst()
-                .orElse(null);
+    private String env(Deployment deployment, String name) {
+        return ContainerEnv.value(client, deployment, name);
     }
 }

@@ -19,7 +19,6 @@ import io.fabric8.kubernetes.client.utils.Serialization;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -96,8 +95,11 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
             Map<String, String> databaseEnv,
             List<String> logs) {
         String name = deploymentName(command.appName(), plan.target());
-        Deployment deployment = buildDeployment(command, namespace, plan.target(), databaseEnv);
+        Map<String, String> plain = plainEnv(command, plan.target());
+        Map<String, String> secretEnv = DatabaseSecret.entries(databaseEnv, plain.keySet());
+        Deployment deployment = buildDeployment(command, namespace, plan.target(), plain, secretEnv);
         try {
+            DatabaseSecret.apply(k8sClient, namespace, command.appName(), name, secretEnv);
             // Fabric8 6.13 은 server-side apply 를 권장하며 createOrReplace 를 deprecated 로 표시한다.
             // 이 모듈의 계약이 createOrReplace 이므로 호출은 유지한다.
             k8sClient.apps().deployments().inNamespace(namespace).resource(deployment).createOrReplace();
@@ -245,7 +247,8 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
             DeployCommand command,
             String namespace,
             String targetColor,
-            Map<String, String> databaseEnv) {
+            Map<String, String> plain,
+            Map<String, String> secretEnv) {
         String appName = command.appName();
         String name = deploymentName(appName, targetColor);
         Map<String, String> labels = Map.of("app", appName, "color", targetColor);
@@ -277,7 +280,7 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
                                     .withName("http")
                                     .withContainerPort(command.targetPort())
                                 .endPort()
-                                .withEnv(containerEnv(command, targetColor, databaseEnv))
+                                .withEnv(containerEnv(name, plain, secretEnv))
                                 .withReadinessProbe(httpProbe(readinessPath, command.targetPort()))
                                 .withLivenessProbe(httpProbe(livenessPath, command.targetPort()))
                                 .withStartupProbe(startupProbe(livenessPath, command.targetPort()))
@@ -302,17 +305,20 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
      * lily-blog-sample 이 {@code /version}, {@code /whoami} 에 이 값을 그대로 내려준다.
      * {@code APP_COLOR} 는 실제 슬롯과 같아야 하므로 extraEnv 보다 나중에 덮어쓴다.
      */
-    private List<EnvVar> containerEnv(
-            DeployCommand command, String targetColor, Map<String, String> databaseEnv) {
+    private static Map<String, String> plainEnv(DeployCommand command, String targetColor) {
         Map<String, String> env = new LinkedHashMap<>();
-        putAll(env, databaseEnv);
         putAll(env, command.extraEnv());
         env.put("APP_VERSION", firstNonBlank(command.appVersion(), "dev"));
         env.put("SERVER_PORT", Integer.toString(command.targetPort()));
         env.put("APP_COLOR", targetColor);
+        return env;
+    }
 
-        List<EnvVar> vars = new ArrayList<>();
-        env.forEach((key, value) -> vars.add(new EnvVarBuilder().withName(key).withValue(value).build()));
+    /** DB 접속 정보는 Secret 참조로, 나머지는 값 그대로 넣는다 */
+    private static List<EnvVar> containerEnv(
+            String deploymentName, Map<String, String> plain, Map<String, String> secretEnv) {
+        List<EnvVar> vars = DatabaseSecret.refs(deploymentName, secretEnv.keySet());
+        plain.forEach((key, value) -> vars.add(new EnvVarBuilder().withName(key).withValue(value).build()));
         return vars;
     }
 
