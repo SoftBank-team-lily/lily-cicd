@@ -91,7 +91,8 @@ public class DeploymentEngine {
                 firstNonBlank(command.appVersion(), "dev"),
                 null,
                 serviceName(appName),
-                METRICS_PATH);
+                METRICS_PATH,
+                command.database());
 
         try {
             record(context, logs, DeployStages.STARTED,
@@ -214,7 +215,8 @@ public class DeploymentEngine {
                 command.livenessPath(),
                 command.appVersion(),
                 command.imagePullSecret(),
-                command.extraEnv() == null ? Map.of() : command.extraEnv());
+                command.extraEnv() == null ? Map.of() : command.extraEnv(),
+                command.database());
     }
 
     private void validate(DeployCommand command) {

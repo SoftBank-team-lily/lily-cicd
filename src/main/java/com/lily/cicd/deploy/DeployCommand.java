@@ -12,6 +12,7 @@ import java.util.Map;
  * @param appVersion       컨테이너 환경변수 {@code APP_VERSION}. null 이면 {@code dev}
  * @param imagePullSecret  ECR 비공개 이미지용 docker-registry 시크릿 이름. 없으면 null
  * @param extraEnv         추가로 넣을 환경변수. {@code APP_COLOR} 와 {@code SERVER_PORT} 는 엔진이 다시 덮어쓴다
+ * @param database         DB 엔진 ({@code postgres} / {@code mysql}). null 이면 DB 를 만들지 않는다
  */
 public record DeployCommand(
         String appName,
@@ -23,8 +24,18 @@ public record DeployCommand(
         String livenessPath,
         String appVersion,
         String imagePullSecret,
-        Map<String, String> extraEnv
+        Map<String, String> extraEnv,
+        String database
 ) {
+    /** DB 없이 배포 */
+    public DeployCommand(
+            String appName, String imageUrl, int targetPort, String namespace, String domain,
+            String readinessPath, String livenessPath, String appVersion, String imagePullSecret,
+            Map<String, String> extraEnv) {
+        this(appName, imageUrl, targetPort, namespace, domain, readinessPath, livenessPath,
+                appVersion, imagePullSecret, extraEnv, null);
+    }
+
     public static DeployCommand of(String appName, String imageUrl, int targetPort) {
         return new DeployCommand(
                 appName, imageUrl, targetPort,
