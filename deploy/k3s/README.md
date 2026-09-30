@@ -44,3 +44,7 @@ kubectl -n lily-system rollout restart deploy/lily-cicd
 | Deployment | 조회, 생성, 교체, 삭제, Ready 대기, scale |
 | Service | 조회, 생성, 교체 (selector 전환) |
 | Ingress | 조회, 생성, 교체 (Nginx 라우팅) |
+| ConfigMap | 조회, 생성, 교체, 삭제 (슬롯별 마이그레이션 스크립트 `{app}-{slot}-schema`) |
+| Lease | 조회, 생성, 교체, 삭제 (배포·롤백 잠금 `lily-lock-{app}`) |
+
+스키마 마이그레이션은 이 Pod 가 사용자 DB 에 직접 붙어 실행한다. lily-cicd 가 worker 에서 돌고 RDS 보안 그룹이 worker 를 허용해야 한다.

@@ -2,7 +2,8 @@
 #
 # - 클러스터 안에서 돌기 때문에 kubeconfig 없이 ServiceAccount 로 k8s API 를 호출한다
 # - 배포 요청마다 namespace 가 달라질 수 있어서 ClusterRole 로 권한을 준다.
-#   코드가 쓰는 리소스(Deployment, Service, Ingress)만 연다
+#   코드가 쓰는 리소스(Deployment, Service, Ingress, 릴리스 기록 ConfigMap, 배포 잠금 Lease)만 연다
+# - 스키마 마이그레이션은 이 Pod 가 사용자 DB(RDS)에 직접 붙어 실행한다. worker 에서 돌고 RDS 보안 그룹이 worker 를 허용한다
 # - 클러스터 내부 전용 (ClusterIP). lily-builder 는 http://lily-cicd.lily-system.svc 로 호출한다
 apiVersion: v1
 kind: Namespace
@@ -32,6 +33,14 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "create", "update", "patch"]
+  # 슬롯별 마이그레이션 스크립트 보관 ({app}-{slot}-schema). docs/schema-migration.md
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "delete"]
+  # 같은 앱의 배포·롤백 직렬화 (lily-lock-{app})
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

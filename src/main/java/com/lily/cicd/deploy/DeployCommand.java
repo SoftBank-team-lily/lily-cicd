@@ -14,6 +14,7 @@ import java.util.Map;
  * @param extraEnv         추가로 넣을 환경변수. {@code APP_COLOR} 와 {@code SERVER_PORT} 는 엔진이 다시 덮어쓴다
  * @param database         DB 엔진 ({@code postgres} / {@code mysql}). null 이면 DB 를 만들지 않는다
  * @param host             Ingress 호스트 전체. null 이면 {@code {appName}.{domain}}
+ * @param migrations       마이그레이션 파일 (파일명 → SQL). 비어 있으면 앱이 스키마를 직접 관리한다. docs/schema-migration.md
  */
 public record DeployCommand(
         String appName,
@@ -27,15 +28,25 @@ public record DeployCommand(
         String imagePullSecret,
         Map<String, String> extraEnv,
         String database,
-        String host
+        String host,
+        Map<String, String> migrations
 ) {
-    /** 호스트 지정 없이 배포 */
+    /** 마이그레이션 없이 배포 */
+    public DeployCommand(
+            String appName, String imageUrl, int targetPort, String namespace, String domain,
+            String readinessPath, String livenessPath, String appVersion, String imagePullSecret,
+            Map<String, String> extraEnv, String database, String host) {
+        this(appName, imageUrl, targetPort, namespace, domain, readinessPath, livenessPath,
+                appVersion, imagePullSecret, extraEnv, database, host, Map.of());
+    }
+
+    /** 호스트 지정과 마이그레이션 없이 배포 */
     public DeployCommand(
             String appName, String imageUrl, int targetPort, String namespace, String domain,
             String readinessPath, String livenessPath, String appVersion, String imagePullSecret,
             Map<String, String> extraEnv, String database) {
         this(appName, imageUrl, targetPort, namespace, domain, readinessPath, livenessPath,
-                appVersion, imagePullSecret, extraEnv, database, null);
+                appVersion, imagePullSecret, extraEnv, database, null, Map.of());
     }
 
     /** DB 없이 배포 */
@@ -44,7 +55,7 @@ public record DeployCommand(
             String readinessPath, String livenessPath, String appVersion, String imagePullSecret,
             Map<String, String> extraEnv) {
         this(appName, imageUrl, targetPort, namespace, domain, readinessPath, livenessPath,
-                appVersion, imagePullSecret, extraEnv, null, null);
+                appVersion, imagePullSecret, extraEnv, null, null, Map.of());
     }
 
     public static DeployCommand of(String appName, String imageUrl, int targetPort) {

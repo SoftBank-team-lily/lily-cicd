@@ -11,6 +11,9 @@ import com.lily.cicd.module.NoopDatabaseProvisioner;
 import com.lily.cicd.module.NoopDeployMonitor;
 import com.lily.cicd.module.Slf4jDeployLog;
 import com.lily.cicd.module.TrafficRouter;
+import com.lily.cicd.release.DeployLock;
+import com.lily.cicd.release.ReleaseStore;
+import com.lily.cicd.schema.SchemaMigrator;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -58,5 +61,21 @@ public class ModuleConfiguration {
     @ConditionalOnMissingBean(DeployMonitor.class)
     public DeployMonitor deployMonitor() {
         return new NoopDeployMonitor();
+    }
+
+    /** 마이그레이션을 보낸 배포에서만 사용자 DB 에 붙는다 */
+    @Bean
+    public SchemaMigrator schemaMigrator() {
+        return new SchemaMigrator();
+    }
+
+    @Bean
+    public ReleaseStore releaseStore(KubernetesClient kubernetesClient) {
+        return new ReleaseStore(kubernetesClient);
+    }
+
+    @Bean
+    public DeployLock deployLock(KubernetesClient kubernetesClient) {
+        return new DeployLock(kubernetesClient);
     }
 }

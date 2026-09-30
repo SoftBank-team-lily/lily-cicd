@@ -237,6 +237,20 @@ DB, Router, Logging, Monitoring 모듈은 배포 절차를 직접 알 필요 없
 
 ---
 
+## 스키마 마이그레이션과 롤백
+
+배포 요청에 `migrations`(파일명 → SQL)와 `database`를 함께 보내면, 엔진이 새 슬롯을 만들기 전에 스키마를 옮깁니다. 롤백은 앱과 스키마를 함께 직전 릴리스로 되돌리고 행 데이터는 남깁니다. 규칙과 순서는 [docs/schema-migration.md](docs/schema-migration.md)에 있습니다.
+
+```text
+배포   DB 준비 → lint → dry-run → migrate → 슬롯 적용 → Ready → 트래픽 전환 → ...
+                                          └ Ready 전에 실패하면 이번 버전을 U 스크립트로 되돌림
+롤백   이전 슬롯 1 → Ready → selector 전환 → 백업 → U 역순 실행 → 현재 슬롯 0
+```
+
+* V 파일마다 같은 버전의 `U{버전}__*.sql`이 있어야 합니다. 되돌릴 수 없는 contract 변경은 `-- lily:irreversible`로 표시합니다.
+* 이름·타입 변경, 기본값 없는 `NOT NULL` 추가는 이전 슬롯의 쿼리를 깨뜨리므로 거절합니다.
+* `POST /api/deployments/{appName}/rollback`, `GET /api/deployments/{appName}`
+
 ## 모듈별 책임
 
 ### DB Module
@@ -407,6 +421,10 @@ SPRING_PROFILES_ACTIVE=local
 | Canary 구현           | `CanaryDeploymentStrategy` |
 | 확장 모듈 인터페이스        | `com.lily.cicd.module`     |
 | 배포 API             | `POST /api/deployments`    |
+| 롤백 엔진              | `RollbackEngine`, `POST /api/deployments/{appName}/rollback` |
+| 스키마 마이그레이션         | `com.lily.cicd.schema` (`SchemaMigrator`, `MigrationLinter`) |
+| 릴리스 기록, 배포 잠금      | `com.lily.cicd.release` (`ReleaseStore`, `DeployLock`) |
 | 결과 DTO             | `DeploymentResultDto`      |
-| 배포 테스트             | `K8sBlueGreenDeployerTest`, `CanaryDeploymentStrategyTest` |
+| 배포 테스트             | `K8sBlueGreenDeployerTest`, `CanaryDeploymentStrategyTest`, `DeployWithMigrationTest`, `RollbackEngineTest` |
+| 스키마 테스트            | `SchemaMigratorPostgresTest`, `SchemaMigratorMysqlTest` (Testcontainers, Docker 필요) |
 | 커버리지 검사            | `./gradlew check` 가 라인 커버리지 75% 초과를 요구합니다 |

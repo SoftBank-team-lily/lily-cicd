@@ -44,4 +44,19 @@ public interface DeploymentStrategy {
     default DeployContext bind(DeployContext context, SlotPlan plan) {
         return context.withTargetColor(plan.target());
     }
+
+    /**
+     * 롤백 계획. {@code target} 은 되살릴 이전 슬롯, {@code previous} 는 지금 트래픽을 받는 슬롯이다.
+     * 엔진은 {@link #restorePrevious} 뒤에 {@link #retirePrevious} 로 지금 슬롯을 거둔다.
+     *
+     * @throws com.lily.cicd.release.DeployConflictException 되살릴 슬롯이 없다
+     */
+    default SlotPlan planRollback(String namespace, String appName, List<String> logs) {
+        throw new UnsupportedOperationException(name() + " 전략은 롤백을 지원하지 않는다");
+    }
+
+    /** 이전 슬롯을 다시 띄우고 Ready 가 되면 트래픽을 옮긴다. Ready 전에 실패하면 트래픽은 그대로다 */
+    default void restorePrevious(String namespace, String appName, SlotPlan plan, List<String> logs) {
+        throw new UnsupportedOperationException(name() + " 전략은 롤백을 지원하지 않는다");
+    }
 }
