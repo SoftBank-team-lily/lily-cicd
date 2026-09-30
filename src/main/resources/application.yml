@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: lily-cicd
+
+server:
+  # lily-blog-sample 로컬 포트(8080)와 겹치지 않게 둔다.
+  port: 8090
+
+lily:
+  deploy:
+    app-name: lily
+    namespace: default
+    domain: domain.com
+    # lily-blog-sample 은 '/' 와 '/health' 가 없다. Actuator readiness 가 트래픽 기준이다.
+    readiness-path: /actuator/health/readiness
+    liveness-path: /actuator/health/liveness
+    readiness-timeout-seconds: 120
