@@ -409,3 +409,4 @@ SPRING_PROFILES_ACTIVE=local
 | 배포 API             | `POST /api/deployments`    |
 | 결과 DTO             | `DeploymentResultDto`      |
 | 배포 테스트             | `K8sBlueGreenDeployerTest`, `CanaryDeploymentStrategyTest` |
+| 커버리지 검사            | `./gradlew check` 가 라인 커버리지 75% 초과를 요구합니다 |
