@@ -188,7 +188,7 @@ class K8sBlueGreenDeployerTest {
                 "DB_URL", "jdbc:postgresql://db/lily",
                 "SPRING_PROFILES_ACTIVE", "prod");
 
-        BlueGreenDeployCommand command = new BlueGreenDeployCommand(
+        DeployCommand command = new DeployCommand(
                 APP, IMAGE, 8080, null, null, null, null, "1.0.0", null,
                 Map.of("SPRING_PROFILES_ACTIVE", "local"));
         deployer(8, database, new NginxIngressRouter(client), new Slf4jDeployLog(), new NoopDeployMonitor())
@@ -255,7 +255,64 @@ class K8sBlueGreenDeployerTest {
         assertEquals("blue", serviceColor());
     }
 
-    private K8sBlueGreenDeployer deployer(long timeoutSeconds) {
+    @Test
+    void 다른_전략을_넣으면_블루그린_Deployment를_만들지_않는다() {
+        DeploymentStrategy canary = new DeploymentStrategy() {
+            @Override
+            public String name() {
+                return "canary";
+            }
+
+            @Override
+            public SlotPlan plan(String namespace, String appName, java.util.List<String> logs) {
+                logs.add("canary: plan");
+                return new SlotPlan("canary", "stable");
+            }
+
+            @Override
+            public void applyTarget(
+                    DeployCommand command, String namespace, SlotPlan plan,
+                    java.util.Map<String, String> databaseEnv, java.util.List<String> logs) {
+                logs.add("canary: apply");
+            }
+
+            @Override
+            public void awaitReady(String namespace, String appName, SlotPlan plan, java.util.List<String> logs) {
+                logs.add("canary: ready");
+            }
+
+            @Override
+            public void switchTraffic(DeployCommand command, String namespace, SlotPlan plan, java.util.List<String> logs) {
+                logs.add("canary: switch");
+            }
+
+            @Override
+            public void retirePrevious(String namespace, String appName, SlotPlan plan, java.util.List<String> logs) {
+                logs.add("canary: retire");
+            }
+        };
+
+        DeployProperties properties = new DeployProperties();
+        properties.setReadinessTimeoutSeconds(8);
+        DeploymentResultDto result = new DeploymentEngine(
+                properties,
+                canary,
+                new NoopDatabaseProvisioner(),
+                new NginxIngressRouter(client),
+                new Slf4jDeployLog(),
+                new NoopDeployMonitor())
+                .deploy(APP, IMAGE, 8080)
+                .join();
+
+        assertEquals("SUCCESS", result.status());
+        assertEquals("canary", result.activeColor());
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("strategy=canary")));
+        assertNull(deployment("lily-blue"));
+        assertNull(deployment("lily-green"));
+        assertNull(client.services().inNamespace(NAMESPACE).withName("lily-svc").get());
+    }
+
+    private DeploymentEngine deployer(long timeoutSeconds) {
         return deployer(timeoutSeconds,
                 new NoopDatabaseProvisioner(),
                 new NginxIngressRouter(client),
@@ -263,7 +320,7 @@ class K8sBlueGreenDeployerTest {
                 new NoopDeployMonitor());
     }
 
-    private K8sBlueGreenDeployer deployer(
+    private DeploymentEngine deployer(
             long timeoutSeconds,
             DatabaseProvisioner database,
             TrafficRouter router,
@@ -271,7 +328,13 @@ class K8sBlueGreenDeployerTest {
             DeployMonitor monitor) {
         DeployProperties properties = new DeployProperties();
         properties.setReadinessTimeoutSeconds(timeoutSeconds);
-        return new K8sBlueGreenDeployer(client, properties, database, router, deployLog, monitor);
+        return new DeploymentEngine(
+                properties,
+                new BlueGreenDeploymentStrategy(client, properties),
+                database,
+                router,
+                deployLog,
+                monitor);
     }
 
     private void givenService(String color) {

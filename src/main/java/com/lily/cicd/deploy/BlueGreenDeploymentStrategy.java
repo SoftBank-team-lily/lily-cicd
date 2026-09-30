@@ -1,12 +1,6 @@
 package com.lily.cicd.deploy;
 
 import com.lily.cicd.config.DeployProperties;
-import com.lily.cicd.module.DatabaseProvisioner;
-import com.lily.cicd.module.DeployContext;
-import com.lily.cicd.module.DeployLog;
-import com.lily.cicd.module.DeployMonitor;
-import com.lily.cicd.module.DeployStages;
-import com.lily.cicd.module.TrafficRouter;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
 import io.fabric8.kubernetes.api.model.IntOrString;
@@ -20,197 +14,45 @@ import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.fabric8.kubernetes.client.KubernetesClientTimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.scheduling.annotation.Async;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * k3s 위에서 앱 하나를 블루그린으로 배포한다.
- *
- * <p>앱 이름 {@code lily} 기준으로 CICD 가 직접 만드는 오브젝트:
- * <ul>
- *   <li>Deployment {@code lily-blue}, {@code lily-green}</li>
- *   <li>Service {@code lily-svc} — selector 의 {@code color} 가 트래픽 스위치</li>
- * </ul>
- * Ingress 는 Router 모듈 자리다. 구현이 없으면 {@code NginxIngressRouter} 가 {@code lily-ingress} 를 만든다.
- * DB, Logging, Monitoring 도 같은 방식으로 빈만 바꾸면 붙는다.
- *
- * <p>kubectl 은 호출하지 않는다. Fabric8 Kubernetes Client 만 사용한다.
- * 인스턴스 필드는 클라이언트와 설정뿐이라 동시에 여러 앱을 배포해도 색 상태가 섞이지 않는다.
- * 한 번의 실행 기록은 메서드 지역 변수 {@code logs} 에만 쌓인다.
- *
- * <p>lily-blog-sample 계약: 컨테이너 포트 8080, readiness {@code /actuator/health/readiness},
- * 환경변수 {@code APP_COLOR} / {@code APP_VERSION}. 샘플 앱은 {@code /} 와 {@code /health} 를 제공하지 않는다.
+ * blue 와 green 두 슬롯 중 트래픽이 없는 쪽에 새 이미지를 올리고,
+ * Ready 이후에 Service selector 의 color 를 한 번에 바꾼다.
+ * 이전 슬롯은 지우지 않고 replica 를 0 으로 줄인다.
  */
-@org.springframework.stereotype.Service // Kubernetes Service 와 이름이 겹쳐 전체 이름을 쓴다.
-public class K8sBlueGreenDeployer {
+public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
 
-    private static final Logger log = LoggerFactory.getLogger(K8sBlueGreenDeployer.class);
+    private static final Logger log = LoggerFactory.getLogger(BlueGreenDeploymentStrategy.class);
     private static final int REPLICAS = 1;
     private static final int SERVICE_PORT = 80;
     private static final String COLOR_BLUE = "blue";
     private static final String COLOR_GREEN = "green";
 
-    private static final String METRICS_PATH = "/actuator/prometheus";
-
     private final KubernetesClient k8sClient;
     private final DeployProperties properties;
-    private final DatabaseProvisioner databaseProvisioner;
-    private final TrafficRouter trafficRouter;
-    private final DeployLog deployLog;
-    private final DeployMonitor deployMonitor;
 
-    public K8sBlueGreenDeployer(
-            KubernetesClient k8sClient,
-            DeployProperties properties,
-            DatabaseProvisioner databaseProvisioner,
-            TrafficRouter trafficRouter,
-            DeployLog deployLog,
-            DeployMonitor deployMonitor) {
+    public BlueGreenDeploymentStrategy(KubernetesClient k8sClient, DeployProperties properties) {
         this.k8sClient = k8sClient;
         this.properties = properties;
-        this.databaseProvisioner = databaseProvisioner;
-        this.trafficRouter = trafficRouter;
-        this.deployLog = deployLog;
-        this.deployMonitor = deployMonitor;
     }
 
-    @Async
-    public CompletableFuture<DeploymentResultDto> deploy(String appName, String imageUrl, int targetPort) {
-        return deploy(BlueGreenDeployCommand.of(appName, imageUrl, targetPort));
-    }
-
-    @Async
-    public CompletableFuture<DeploymentResultDto> deploy(BlueGreenDeployCommand command) {
-        try {
-            return CompletableFuture.completedFuture(execute(command));
-        } catch (DeploymentFailedException e) {
-            log.error("blue-green aborted. message={}", e.getMessage(), e);
-            throw e;
-        } catch (KubernetesClientException e) {
-            log.error("kubernetes api failed. code={} message={}", e.getCode(), e.getMessage(), e);
-            throw new DeploymentFailedException(
-                    "kubernetes api 호출 실패: " + e.getMessage(), List.of(), e);
-        }
-    }
-
-    private DeploymentResultDto execute(BlueGreenDeployCommand command) {
-        command = applyDefaults(command);
-        validate(command);
-        List<String> logs = new ArrayList<>();
-        String namespace = firstNonBlank(command.namespace(), properties.getNamespace());
-        String appName = command.appName();
-        String host = appName + "." + firstNonBlank(command.domain(), properties.getDomain());
-        DeployContext context = new DeployContext(
-                appName,
-                namespace,
-                command.imageUrl(),
-                command.targetPort(),
-                SERVICE_PORT,
-                host,
-                firstNonBlank(command.appVersion(), "dev"),
-                null,
-                serviceName(appName),
-                METRICS_PATH);
-
-        try {
-            record(context, logs, DeployStages.STARTED, "deploy started image=" + command.imageUrl());
-            Map<String, String> databaseEnv = prepareDatabase(context, logs);
-
-            ColorChoice colors = step1ResolveColors(namespace, appName, logs);
-            context = context.withTargetColor(colors.target());
-            record(context, logs, DeployStages.COLOR, last(logs));
-
-            String targetName = deploymentName(appName, colors.target());
-            step2ApplyTargetDeployment(command, namespace, colors.target(), databaseEnv, logs);
-            record(context, logs, DeployStages.DEPLOYMENT, last(logs));
-
-            step3WaitUntilReady(namespace, targetName, logs);
-            record(context, logs, DeployStages.READY, last(logs));
-
-            step4SwitchService(command, namespace, colors.target(), logs);
-            record(context, logs, DeployStages.SERVICE, last(logs));
-
-            route(context, logs);
-            watch(context, logs);
-            step6ScaleDownOld(namespace, appName, colors.current(), logs);
-            record(context, logs, DeployStages.SCALE_DOWN, last(logs));
-
-            record(context, logs, DeployStages.SUCCEEDED,
-                    "cutover complete. active=" + colors.target() + " host=" + host);
-            return new DeploymentResultDto("SUCCESS", colors.target(), "http://" + host, List.copyOf(logs));
-        } catch (RuntimeException e) {
-            notifyFailure(context, logs, e);
-            throw e;
-        }
-    }
-
-    private Map<String, String> prepareDatabase(DeployContext context, List<String> logs) {
-        try {
-            Map<String, String> env = databaseProvisioner.prepare(context);
-            if (env == null) {
-                env = Map.of();
-            }
-            record(context, logs, DeployStages.DATABASE, "database: env keys=" + env.keySet());
-            return env;
-        } catch (RuntimeException e) {
-            logs.add("database: prepare failed — deployment 를 만들지 않음");
-            log.error("database module failed. app={} message={}", context.appName(), e.getMessage(), e);
-            throw new DeploymentFailedException("DB 모듈 준비 실패", logs, e);
-        }
-    }
-
-    private void route(DeployContext context, List<String> logs) {
-        try {
-            trafficRouter.route(context);
-            record(context, logs, DeployStages.ROUTER,
-                    "router: " + context.host() + " -> " + context.serviceName() + ":" + context.servicePort());
-        } catch (RuntimeException e) {
-            log.error("router module failed. app={} host={} message={}",
-                    context.appName(), context.host(), e.getMessage(), e);
-            logs.add("router: 적용 실패. service selector 는 이미 target 을 가리킬 수 있음");
-            throw new DeploymentFailedException("router 적용 실패: " + context.host(), logs, e);
-        }
-    }
-
-    private void watch(DeployContext context, List<String> logs) {
-        try {
-            deployMonitor.attached(context);
-            record(context, logs, DeployStages.MONITOR,
-                    "monitor: " + context.serviceName() + ":" + context.targetPort() + context.metricsPath());
-        } catch (RuntimeException e) {
-            log.warn("monitoring module failed. deploy continues. app={} message={}",
-                    context.appName(), e.getMessage(), e);
-            record(context, logs, DeployStages.MONITOR, "monitor: attach failed, deploy continues");
-        }
-    }
-
-    private void notifyFailure(DeployContext context, List<String> logs, RuntimeException error) {
-        String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
-        try {
-            deployLog.record(context, DeployStages.FAILED, message);
-        } catch (RuntimeException logError) {
-            log.warn("logging module failed while reporting failure. message={}", logError.getMessage(), logError);
-        }
-        try {
-            deployMonitor.failed(context, message);
-        } catch (RuntimeException monitorError) {
-            log.warn("monitoring module failed while reporting failure. message={}",
-                    monitorError.getMessage(), monitorError);
-        }
-        logs.add("failed: " + message);
+    @Override
+    public String name() {
+        return "blue-green";
     }
 
     /**
      * Service selector 의 color 가 지금 트래픽을 받는 색이다.
      * Service 가 없거나 color 가 green 이면 다음은 blue. color 가 blue 이면 다음은 green.
      */
-    private ColorChoice step1ResolveColors(String namespace, String appName, List<String> logs) {
+    @Override
+    public SlotPlan plan(String namespace, String appName, List<String> logs) {
         String serviceName = serviceName(appName);
         Service service;
         try {
@@ -230,11 +72,11 @@ public class K8sBlueGreenDeployer {
         if (service == null || color == null || COLOR_GREEN.equals(color)) {
             logs.add("step1: service=" + (service == null ? "absent" : serviceName)
                     + " color=" + color + " -> target=blue current=green");
-            return new ColorChoice(COLOR_BLUE, COLOR_GREEN);
+            return new SlotPlan(COLOR_BLUE, COLOR_GREEN);
         }
         if (COLOR_BLUE.equals(color)) {
             logs.add("step1: service=" + serviceName + " color=blue -> target=green current=blue");
-            return new ColorChoice(COLOR_GREEN, COLOR_BLUE);
+            return new SlotPlan(COLOR_GREEN, COLOR_BLUE);
         }
 
         logs.add("step1: unsupported color=" + color);
@@ -242,14 +84,15 @@ public class K8sBlueGreenDeployer {
                 "selector color 는 blue 또는 green 만 지원한다. 현재 값: " + color, logs, null);
     }
 
-    private void step2ApplyTargetDeployment(
-            BlueGreenDeployCommand command,
+    @Override
+    public void applyTarget(
+            DeployCommand command,
             String namespace,
-            String targetColor,
+            SlotPlan plan,
             Map<String, String> databaseEnv,
             List<String> logs) {
-        String name = deploymentName(command.appName(), targetColor);
-        Deployment deployment = buildDeployment(command, namespace, targetColor, databaseEnv);
+        String name = deploymentName(command.appName(), plan.target());
+        Deployment deployment = buildDeployment(command, namespace, plan.target(), databaseEnv);
         try {
             // Fabric8 6.13 은 server-side apply 를 권장하며 createOrReplace 를 deprecated 로 표시한다.
             // 이 모듈의 계약이 createOrReplace 이므로 호출은 유지한다.
@@ -268,7 +111,9 @@ public class K8sBlueGreenDeployer {
      * Ready 가 되기 전에는 Service selector 를 바꾸지 않는다.
      * 타임아웃이면 target Deployment 만 지우고 파이프라인을 중단한다.
      */
-    private void step3WaitUntilReady(String namespace, String targetName, List<String> logs) {
+    @Override
+    public void awaitReady(String namespace, String appName, SlotPlan plan, List<String> logs) {
+        String targetName = deploymentName(appName, plan.target());
         long timeout = properties.getReadinessTimeoutSeconds();
         try {
             Deployment ready = k8sClient.apps().deployments()
@@ -291,8 +136,8 @@ public class K8sBlueGreenDeployer {
         }
     }
 
-    private void step4SwitchService(
-            BlueGreenDeployCommand command, String namespace, String targetColor, List<String> logs) {
+    @Override
+    public void switchTraffic(DeployCommand command, String namespace, SlotPlan plan, List<String> logs) {
         String name = serviceName(command.appName());
         int targetPort = command.targetPort();
         Service service = new ServiceBuilder()
@@ -303,7 +148,7 @@ public class K8sBlueGreenDeployer {
                 .endMetadata()
                 .withNewSpec()
                     .withType("ClusterIP")
-                    .withSelector(Map.of("app", command.appName(), "color", targetColor))
+                    .withSelector(Map.of("app", command.appName(), "color", plan.target()))
                     .addNewPort()
                         .withName("http")
                         .withPort(SERVICE_PORT)
@@ -314,7 +159,7 @@ public class K8sBlueGreenDeployer {
                 .build();
         try {
             k8sClient.services().inNamespace(namespace).resource(service).createOrReplace();
-            logs.add("step4: service " + name + " selector color=" + targetColor
+            logs.add("step4: service " + name + " selector color=" + plan.target()
                     + " port " + SERVICE_PORT + " -> " + targetPort);
         } catch (KubernetesClientException e) {
             log.error("failed to switch service. namespace={} name={} code={} message={}",
@@ -324,8 +169,9 @@ public class K8sBlueGreenDeployer {
         }
     }
 
-    private void step6ScaleDownOld(String namespace, String appName, String currentColor, List<String> logs) {
-        String name = deploymentName(appName, currentColor);
+    @Override
+    public void retirePrevious(String namespace, String appName, SlotPlan plan, List<String> logs) {
+        String name = deploymentName(appName, plan.previous());
         try {
             Deployment existing = k8sClient.apps().deployments().inNamespace(namespace).withName(name).get();
             if (existing == null) {
@@ -345,7 +191,7 @@ public class K8sBlueGreenDeployer {
     }
 
     private Deployment buildDeployment(
-            BlueGreenDeployCommand command,
+            DeployCommand command,
             String namespace,
             String targetColor,
             Map<String, String> databaseEnv) {
@@ -405,7 +251,7 @@ public class K8sBlueGreenDeployer {
      * {@code APP_COLOR} 는 실제 슬롯과 같아야 하므로 extraEnv 보다 나중에 덮어쓴다.
      */
     private List<EnvVar> containerEnv(
-            BlueGreenDeployCommand command, String targetColor, Map<String, String> databaseEnv) {
+            DeployCommand command, String targetColor, Map<String, String> databaseEnv) {
         Map<String, String> env = new LinkedHashMap<>();
         putAll(env, databaseEnv);
         putAll(env, command.extraEnv());
@@ -427,21 +273,6 @@ public class K8sBlueGreenDeployer {
                 target.put(key, value);
             }
         });
-    }
-
-    private void record(DeployContext context, List<String> logs, String stage, String detail) {
-        if (logs.isEmpty() || !detail.equals(logs.get(logs.size() - 1))) {
-            logs.add(detail);
-        }
-        try {
-            deployLog.record(context, stage, detail);
-        } catch (RuntimeException e) {
-            log.warn("logging module failed. stage={} message={}", stage, e.getMessage(), e);
-        }
-    }
-
-    private static String last(List<String> logs) {
-        return logs.get(logs.size() - 1);
     }
 
     private io.fabric8.kubernetes.api.model.Probe httpProbe(String path, int port) {
@@ -467,49 +298,6 @@ public class K8sBlueGreenDeployer {
         }
     }
 
-    private BlueGreenDeployCommand applyDefaults(BlueGreenDeployCommand command) {
-        if (command == null) {
-            return null;
-        }
-        String appName = firstNonBlank(command.appName(), properties.getAppName());
-        if (appName.equals(command.appName())) {
-            return command;
-        }
-        return new BlueGreenDeployCommand(
-                appName,
-                command.imageUrl(),
-                command.targetPort(),
-                command.namespace(),
-                command.domain(),
-                command.readinessPath(),
-                command.livenessPath(),
-                command.appVersion(),
-                command.imagePullSecret(),
-                command.extraEnv() == null ? Map.of() : command.extraEnv());
-    }
-
-    private void validate(BlueGreenDeployCommand command) {
-        if (command == null) {
-            throw new IllegalArgumentException("command 가 비어 있다");
-        }
-        if (command.appName() == null || !command.appName().matches("[a-z0-9]([-a-z0-9]*[a-z0-9])?")) {
-            throw new IllegalArgumentException(
-                    "appName 은 소문자, 숫자, 하이픈만 사용할 수 있다: " + command.appName());
-        }
-        if (command.appName().length() > 55) {
-            throw new IllegalArgumentException("appName 은 55자 이하여야 한다. '-ingress' 접미사를 붙이면 63자를 넘긴다");
-        }
-        if (command.imageUrl() == null || command.imageUrl().isBlank()) {
-            throw new IllegalArgumentException("imageUrl 이 비어 있다");
-        }
-        if (command.targetPort() < 1 || command.targetPort() > 65535) {
-            throw new IllegalArgumentException("targetPort 범위가 아니다: " + command.targetPort());
-        }
-        if (properties.getReadinessTimeoutSeconds() <= 0) {
-            throw new IllegalArgumentException("readinessTimeoutSeconds 는 1 이상이어야 한다");
-        }
-    }
-
     private static String deploymentName(String appName, String color) {
         return appName + "-" + color;
     }
@@ -523,8 +311,5 @@ public class K8sBlueGreenDeployer {
             return preferred;
         }
         return fallback;
-    }
-
-    private record ColorChoice(String target, String current) {
     }
 }

@@ -4,7 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
  * 클러스터에 공통으로 적용하는 배포 기본값.
- * 요청마다 바꿀 값은 {@code BlueGreenDeployCommand} 로 덮어쓴다.
+ * 요청마다 바꿀 값은 {@code DeployCommand} 로 덮어쓴다.
  */
 @ConfigurationProperties(prefix = "lily.deploy")
 public class DeployProperties {

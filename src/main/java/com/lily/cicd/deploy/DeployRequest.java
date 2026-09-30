@@ -19,8 +19,8 @@ public record DeployRequest(
         String imagePullSecret,
         Map<String, String> extraEnv
 ) {
-    public BlueGreenDeployCommand toCommand() {
-        return new BlueGreenDeployCommand(
+    public DeployCommand toCommand() {
+        return new DeployCommand(
                 appName,
                 imageUrl,
                 targetPort,

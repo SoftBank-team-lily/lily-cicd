@@ -35,6 +35,20 @@ flowchart TD
 * 트래픽 전환은 Service Selector 변경만으로 수행합니다.
 * 배포 실패 시 기존 서비스는 계속 유지됩니다.
 
+배포 절차 자체는 `DeploymentStrategy` 인터페이스 뒤에 있습니다. 엔진은 요청을 받아 이 인터페이스만 호출하며, 기본 구현은 Blue-Green입니다. Canary처럼 다른 규칙을 쓰려면 같은 타입의 Spring Bean을 하나 등록하면 됩니다. Bean이 있으면 기본 구현은 만들어지지 않습니다.
+
+```text
+DeploymentEngine
+  → DeploymentStrategy.plan
+  → DeploymentStrategy.applyTarget
+  → DeploymentStrategy.awaitReady
+  → DeploymentStrategy.switchTraffic
+  → Router / Monitoring
+  → DeploymentStrategy.retirePrevious
+```
+
+기본 구현 `BlueGreenDeploymentStrategy`의 슬롯 이름은 `blue`와 `green`입니다. 다른 전략은 `SlotPlan`의 target과 previous에 자기 슬롯 이름을 넣으면 됩니다.
+
 ---
 
 ## 설계 배경
@@ -87,7 +101,7 @@ flowchart LR
 
 기본 애플리케이션 이름은 `lily`입니다.
 
-배포 엔진은 현재 Service의 Selector를 기준으로 다음 배포 대상을 결정합니다.
+기본 전략인 Blue-Green은 현재 Service의 Selector를 기준으로 다음 배포 대상을 결정합니다.
 
 ```text
 active = service.selector.color
@@ -224,7 +238,9 @@ Deployment 생성 이전에 실행됩니다.
 
 ### CICD Engine
 
-다음 작업은 CICD 엔진만 수행합니다.
+엔진은 배포 요청, DB 준비, Router, Monitoring을 순서대로 호출합니다. 슬롯을 고르고 트래픽을 옮기는 일은 `DeploymentStrategy`가 수행합니다.
+
+기본 전략인 Blue-Green이 하는 일은 다음과 같습니다.
 
 * 배포 대상 슬롯 결정
 * Deployment 생성
@@ -372,7 +388,9 @@ SPRING_PROFILES_ACTIVE=local
 
 | 내용                 | 위치                         |
 | ------------------ | -------------------------- |
-| Blue-Green 배포 알고리즘 | `K8sBlueGreenDeployer`     |
+| 배포 엔진              | `DeploymentEngine`         |
+| 배포 전략 인터페이스        | `DeploymentStrategy`       |
+| Blue-Green 구현       | `BlueGreenDeploymentStrategy` |
 | 확장 모듈 인터페이스        | `com.lily.cicd.module`     |
 | 배포 API             | `POST /api/deployments`    |
 | 결과 DTO             | `DeploymentResultDto`      |

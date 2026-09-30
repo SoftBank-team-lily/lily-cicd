@@ -1,5 +1,7 @@
 package com.lily.cicd.config;
 
+import com.lily.cicd.deploy.BlueGreenDeploymentStrategy;
+import com.lily.cicd.deploy.DeploymentStrategy;
 import com.lily.cicd.module.DatabaseProvisioner;
 import com.lily.cicd.module.DeployLog;
 import com.lily.cicd.module.DeployMonitor;
@@ -18,6 +20,12 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 public class ModuleConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean(DeploymentStrategy.class)
+    public DeploymentStrategy deploymentStrategy(KubernetesClient kubernetesClient, DeployProperties properties) {
+        return new BlueGreenDeploymentStrategy(kubernetesClient, properties);
+    }
 
     @Bean
     @ConditionalOnMissingBean(DatabaseProvisioner.class)

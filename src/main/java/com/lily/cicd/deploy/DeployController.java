@@ -14,15 +14,15 @@ import java.util.concurrent.ExecutionException;
 
 /**
  * 팀원이 HTTP 로 배포를 걸 수 있는 입구.
- * 실제 순서는 {@link K8sBlueGreenDeployer} 에 있다.
+ * 실제 순서는 {@link DeploymentEngine} 이 {@link DeploymentStrategy} 에 맡긴다.
  */
 @RestController
 @RequestMapping("/api/deployments")
 public class DeployController {
 
-    private final K8sBlueGreenDeployer deployer;
+    private final DeploymentEngine deployer;
 
-    public DeployController(K8sBlueGreenDeployer deployer) {
+    public DeployController(DeploymentEngine deployer) {
         this.deployer = deployer;
     }
 
