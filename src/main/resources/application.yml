@@ -1,6 +1,11 @@
 spring:
   application:
     name: lily-cicd
+  mvc:
+    async:
+      # 배포는 readiness 대기(최대 120초)까지 포함해 오래 걸린다. 기본값(30초)이면 배포 중에 503 을 돌려준다.
+      # lily-builder 의 읽기 타임아웃(300초)보다 짧게 둬서 결과가 builder 에 먼저 도착하게 한다
+      request-timeout: 290s
 
 server:
   # lily-blog-sample 로컬 포트(8080)와 겹치지 않게 둔다.
