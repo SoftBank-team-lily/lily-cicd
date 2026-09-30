@@ -22,6 +22,7 @@ import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
 import io.fabric8.kubernetes.api.model.networking.v1.Ingress;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.server.mock.KubernetesServer;
+import io.fabric8.kubernetes.client.utils.Serialization;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -36,6 +37,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -75,6 +77,7 @@ class K8sBlueGreenDeployerTest {
         client.services().inNamespace(NAMESPACE).delete();
         client.network().v1().ingresses().inNamespace(NAMESPACE).delete();
         client.configMaps().inNamespace(NAMESPACE).delete();
+        client.secrets().inNamespace(NAMESPACE).delete();
         client.leases().inNamespace(NAMESPACE).delete();
     }
 
@@ -205,6 +208,25 @@ class K8sBlueGreenDeployerTest {
         assertEquals("jdbc:postgresql://db/lily", env(blue, "DB_URL"));
         assertEquals("local", env(blue, "SPRING_PROFILES_ACTIVE"));
         assertEquals("blue", env(blue, "APP_COLOR"));
+    }
+
+    @Test
+    void DB_접속정보는_Deployment_스펙에_평문으로_남지_않는다() {
+        startReadyMarker();
+        DatabaseProvisioner database = context -> Map.of(
+                "DB_URL", "jdbc:postgresql://db/lily",
+                "DB_PASSWORD", "s3cret");
+
+        deployer(8, database, new NginxIngressRouter(client), new Slf4jDeployLog(), new NoopDeployMonitor())
+                .deploy(APP, IMAGE, 8080)
+                .join();
+
+        Deployment blue = deployment("lily-blue");
+        EnvVar password = ContainerEnv.var(blue, "DB_PASSWORD");
+        assertNull(password.getValue());
+        assertEquals("lily-blue-db", password.getValueFrom().getSecretKeyRef().getName());
+        assertEquals("s3cret", env(blue, "DB_PASSWORD"));
+        assertFalse(Serialization.asJson(blue).contains("s3cret"));
     }
 
     @Test
@@ -435,11 +457,7 @@ class K8sBlueGreenDeployerTest {
         return client.apps().deployments().inNamespace(NAMESPACE).withName(name).get();
     }
 
-    private static String env(Deployment deployment, String name) {
-        return deployment.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
-                .filter(env -> name.equals(env.getName()))
-                .map(EnvVar::getValue)
-                .findFirst()
-                .orElse(null);
+    private String env(Deployment deployment, String name) {
+        return ContainerEnv.value(client, deployment, name);
     }
 }

@@ -11,7 +11,6 @@ import com.lily.cicd.schema.MigrationSet;
 import com.lily.cicd.schema.SchemaChange;
 import com.lily.cicd.schema.SchemaMigrator;
 import com.lily.cicd.schema.SchemaOperationException;
-import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
 import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
@@ -80,6 +79,7 @@ class DeployWithMigrationTest {
         client.services().inNamespace(NS).delete();
         client.network().v1().ingresses().inNamespace(NS).delete();
         client.configMaps().inNamespace(NS).delete();
+        client.secrets().inNamespace(NS).delete();
         client.leases().inNamespace(NS).delete();
         migrator = mock(SchemaMigrator.class);
     }
@@ -232,8 +232,7 @@ class DeployWithMigrationTest {
         return client.apps().deployments().inNamespace(NS).withName(name).get();
     }
 
-    private static String env(Deployment deployment, String name) {
-        return deployment.getSpec().getTemplate().getSpec().getContainers().get(0).getEnv().stream()
-                .filter(e -> name.equals(e.getName())).map(EnvVar::getValue).findFirst().orElse(null);
+    private String env(Deployment deployment, String name) {
+        return ContainerEnv.value(client, deployment, name);
     }
 }
