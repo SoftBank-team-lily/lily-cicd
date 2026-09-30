@@ -58,7 +58,10 @@ public class DeploymentEngine {
     private final ReleaseStore releaseStore;
     private final DeployLock deployLock;
     private final StageRecorder recorder;
+    /** null 이면 canary 판정 없이 바로 전환한다 */
+    private final CanaryAnalysis canary;
 
+    /** canary 판정과 진행 상황 기록 없이 */
     public DeploymentEngine(
             DeployProperties properties,
             DeploymentStrategy strategy,
@@ -69,6 +72,23 @@ public class DeploymentEngine {
             SchemaMigrator schemaMigrator,
             ReleaseStore releaseStore,
             DeployLock deployLock) {
+        this(properties, strategy, databaseProvisioner, trafficRouter, deployLog, deployMonitor,
+                schemaMigrator, releaseStore, deployLock, null, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public DeploymentEngine(
+            DeployProperties properties,
+            DeploymentStrategy strategy,
+            DatabaseProvisioner databaseProvisioner,
+            TrafficRouter trafficRouter,
+            DeployLog deployLog,
+            DeployMonitor deployMonitor,
+            SchemaMigrator schemaMigrator,
+            ReleaseStore releaseStore,
+            DeployLock deployLock,
+            CanaryAnalysis canary,
+            DeployProgress progress) {
         this.properties = properties;
         this.strategy = strategy;
         this.databaseProvisioner = databaseProvisioner;
@@ -77,7 +97,8 @@ public class DeploymentEngine {
         this.schemaMigrator = schemaMigrator;
         this.releaseStore = releaseStore;
         this.deployLock = deployLock;
-        this.recorder = new StageRecorder(deployLog, deployMonitor);
+        this.recorder = new StageRecorder(deployLog, deployMonitor, progress);
+        this.canary = canary;
     }
 
     @Async
@@ -149,15 +170,30 @@ public class DeploymentEngine {
 
                 strategy.awaitReady(namespace, appName, plan, logs);
                 recorder.record(context, logs, DeployStages.READY, last(logs));
+
+                CanaryAnalysis.Verdict verdict = judge(context, command, plan, logs);
+                if (verdict.rejected()) {
+                    strategy.discardTarget(namespace, appName, plan, logs);
+                    throw new CanaryRejectedException("canary 판정 실패: " + verdict.reason(), logs);
+                }
             } catch (RuntimeException e) {
-                if (revertSchema(databaseEnv, scripts, change, logs) && e instanceof DeploymentFailedException) {
+                closeCanary(namespace, appName, logs);
+                boolean reverted = revertSchema(databaseEnv, scripts, change, logs);
+                if (e instanceof CanaryRejectedException) {
+                    throw new CanaryRejectedException(e.getMessage(), logs);
+                }
+                if (reverted && e instanceof DeploymentFailedException) {
                     // 예외의 로그는 만들 때 복사된다. 되돌린 결과를 응답에 담으려고 다시 만든다
                     throw new DeploymentFailedException(e.getMessage(), logs, e.getCause());
                 }
                 throw e;
             }
 
-            strategy.switchTraffic(command, namespace, plan, logs);
+            try {
+                strategy.switchTraffic(command, namespace, plan, logs);
+            } finally {
+                closeCanary(namespace, appName, logs);
+            }
             recorder.record(context, logs, DeployStages.SERVICE, last(logs));
 
             route(context, logs);
@@ -167,11 +203,36 @@ public class DeploymentEngine {
 
             recorder.record(context, logs, DeployStages.SUCCEEDED,
                     "cutover complete. active=" + plan.target() + " host=" + host);
-            return new DeploymentResultDto("SUCCESS", plan.target(), "http://" + host,
+            return new DeploymentResultDto("SUCCESS", plan.target(), properties.getUrlScheme() + "://" + host,
                     SchemaVersions.format(change.to()), List.copyOf(logs));
         } catch (RuntimeException e) {
             recorder.failed(context, logs, e);
             throw e;
+        }
+    }
+
+    /**
+     * 블루그린 전환 전 canary 판정. 판정 경로는 요청의 canaryPath, 없으면 readiness 경로다.
+     * 첫 배포처럼 비교할 이전 버전이 없으면 건너뛴다.
+     */
+    private CanaryAnalysis.Verdict judge(DeployContext context, DeployCommand command, SlotPlan plan, List<String> logs) {
+        if (canary == null || !"blue-green".equals(strategy.name())) {
+            return new CanaryAnalysis.Verdict("SKIPPED", "not enabled for " + strategy.name(), null);
+        }
+        String path = firstNonBlank(command.canaryPath(),
+                firstNonBlank(command.readinessPath(), properties.getReadinessPath()));
+        try {
+            return canary.judge(context, path, plan, (stage, line) -> recorder.record(context, logs, stage, line));
+        } catch (KubernetesClientException e) {
+            log.error("canary analysis failed. app={} message={}", context.appName(), e.getMessage(), e);
+            logs.add("canary: kubernetes api 실패 — " + e.getMessage());
+            throw new DeploymentFailedException("canary 판정 준비 실패: " + e.getMessage(), logs, e);
+        }
+    }
+
+    private void closeCanary(String namespace, String appName, List<String> logs) {
+        if (canary != null) {
+            canary.cleanup(namespace, appName, logs);
         }
     }
 
@@ -275,7 +336,8 @@ public class DeploymentEngine {
                 command.extraEnv() == null ? Map.of() : command.extraEnv(),
                 command.database(),
                 command.host(),
-                command.migrations());
+                command.migrations(),
+                command.canaryPath());
     }
 
     private void validate(DeployCommand command) {

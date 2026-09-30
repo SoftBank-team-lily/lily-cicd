@@ -27,12 +27,17 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments/scale"]
     verbs: ["get", "update", "patch"]
+  # delete: canary 판정이 끝나면 {app}-canary-svc, {app}-canary-ingress 를 지운다. docs/canary-analysis.md
   - apiGroups: [""]
     resources: ["services"]
-    verbs: ["get", "create", "update", "patch"]
+    verbs: ["get", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
-    verbs: ["get", "create", "update", "patch"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+  # canary 판정 중 새 Pod 재시작 확인
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
   # 슬롯별 마이그레이션 스크립트 보관 ({app}-{slot}-schema). docs/schema-migration.md
   - apiGroups: [""]
     resources: ["configmaps"]
@@ -94,6 +99,11 @@ spec:
             # 배포 전략: blue-green 또는 canary
             - name: LILY_DEPLOY_STRATEGY
               value: blue-green
+            # 앱 주소 https://{app}.apps.lilycloud.kr. *.apps.lilycloud.kr → lily-alb (ACM 인증서) → ingress-nginx
+            - name: LILY_DEPLOY_DOMAIN
+              value: apps.lilycloud.kr
+            - name: LILY_DEPLOY_URL_SCHEME
+              value: https
           resources:
             requests:
               cpu: 100m

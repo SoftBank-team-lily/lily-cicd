@@ -1,6 +1,7 @@
 package com.lily.cicd.config;
 
 import com.lily.cicd.deploy.BlueGreenDeploymentStrategy;
+import com.lily.cicd.deploy.CanaryAnalysis;
 import com.lily.cicd.deploy.CanaryDeploymentStrategy;
 import com.lily.cicd.deploy.DeploymentStrategy;
 import com.lily.cicd.module.DatabaseProvisioner;
@@ -37,6 +38,12 @@ public class ModuleConfiguration {
         }
         throw new IllegalArgumentException(
                 "lily.deploy.strategy 는 blue-green 또는 canary 여야 한다: " + name);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(CanaryAnalysis.class)
+    public CanaryAnalysis canaryAnalysis(KubernetesClient kubernetesClient, DeployProperties properties) {
+        return new CanaryAnalysis(kubernetesClient, properties);
     }
 
     @Bean

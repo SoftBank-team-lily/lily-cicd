@@ -19,6 +19,8 @@ lily:
     app-name: lily
     namespace: default
     domain: domain.com
+    # 배포 결과 주소의 scheme. Cloudflare 가 TLS 를 끝내는 도메인이면 https
+    url-scheme: http
     # lily-blog-sample 은 '/' 와 '/health' 가 없다. Actuator readiness 가 트래픽 기준이다.
     readiness-path: /actuator/health/readiness
     liveness-path: /actuator/health/liveness
@@ -27,3 +29,15 @@ lily:
     strategy: blue-green
     # canary 일 때 새 버전이 받는 비율. 파드 5개 중 이 비율만큼 canary 에 둔다.
     canary-weight-percent: 20
+    # 블루그린 전환 전 canary 판정. 이전 버전이 떠 있을 때만 한다. docs/canary-analysis.md
+    canary-analysis:
+      enabled: true
+      weight-percent: 10
+      duration-seconds: 30
+      interval-millis: 250
+      request-timeout-millis: 2000
+      max-error-rate: 0.05
+      max-p95-millis: 1000
+      max-p95-ratio: 2.0
+      min-p95-regression-millis: 100
+      min-samples: 20

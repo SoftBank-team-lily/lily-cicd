@@ -19,15 +19,25 @@ class StageRecorder {
 
     private final DeployLog deployLog;
     private final DeployMonitor deployMonitor;
+    private final DeployProgress progress;
 
     StageRecorder(DeployLog deployLog, DeployMonitor deployMonitor) {
+        this(deployLog, deployMonitor, null);
+    }
+
+    /** @param progress null 이면 진행 상황을 남기지 않는다 */
+    StageRecorder(DeployLog deployLog, DeployMonitor deployMonitor, DeployProgress progress) {
         this.deployLog = deployLog;
         this.deployMonitor = deployMonitor;
+        this.progress = progress;
     }
 
     void record(DeployContext context, List<String> logs, String stage, String detail) {
         if (logs.isEmpty() || !detail.equals(logs.get(logs.size() - 1))) {
             logs.add(detail);
+        }
+        if (progress != null) {
+            progress.update(context.namespace(), context.appName(), stage, detail);
         }
         try {
             deployLog.record(context, stage, detail);
@@ -38,6 +48,9 @@ class StageRecorder {
 
     void failed(DeployContext context, List<String> logs, RuntimeException error) {
         String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+        if (progress != null) {
+            progress.update(context.namespace(), context.appName(), DeployStages.FAILED, message);
+        }
         try {
             deployLog.record(context, DeployStages.FAILED, message);
         } catch (RuntimeException logError) {

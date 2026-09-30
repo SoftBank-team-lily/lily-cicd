@@ -38,6 +38,13 @@ public interface DeploymentStrategy {
     void retirePrevious(String namespace, String appName, SlotPlan plan, List<String> logs);
 
     /**
+     * Ready 까지 간 새 슬롯을 트래픽에 넣지 않고 버린다 (canary 판정 실패). 트래픽은 이전 슬롯 그대로다.
+     * 기본은 아무것도 하지 않는다.
+     */
+    default void discardTarget(String namespace, String appName, SlotPlan plan, List<String> logs) {
+    }
+
+    /**
      * Router 와 Monitoring 에 넘기기 전에 슬롯 이름을 context 에 심는다.
      * 기본은 {@code plan.target()} 을 {@code targetColor} 에 넣는다.
      */

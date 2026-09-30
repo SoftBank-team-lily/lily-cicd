@@ -27,10 +27,12 @@ public class DeployController {
 
     private final DeploymentEngine deployer;
     private final RollbackEngine rollbacker;
+    private final DeployProgress progress;
 
-    public DeployController(DeploymentEngine deployer, RollbackEngine rollbacker) {
+    public DeployController(DeploymentEngine deployer, RollbackEngine rollbacker, DeployProgress progress) {
         this.deployer = deployer;
         this.rollbacker = rollbacker;
+        this.progress = progress;
     }
 
     @PostMapping
@@ -54,6 +56,14 @@ public class DeployController {
         } catch (RuntimeException e) {
             return ResponseEntity.status(statusOf(e)).body(errorBody(e));
         }
+    }
+
+    /** 진행 중이거나 마지막으로 끝난 배포의 단계. 배포 요청은 끝날 때까지 응답하지 않아서 따로 묻는다 */
+    @GetMapping("/{appName}/progress")
+    public ResponseEntity<DeployProgress.Snapshot> progress(
+            @PathVariable String appName, @RequestParam(required = false) String namespace) {
+        String ns = namespace == null || namespace.isBlank() ? "default" : namespace;
+        return progress.get(ns, appName).map(ResponseEntity::ok).orElse(ResponseEntity.notFound().build());
     }
 
     private CompletableFuture<ResponseEntity<Object>> respond(
@@ -80,11 +90,17 @@ public class DeployController {
         if (cause instanceof DeployConflictException) {
             return 409;
         }
+        if (cause instanceof CanaryRejectedException) {
+            return 422;
+        }
         return 500;
     }
 
     private static DeployError errorBody(Throwable error) {
         Throwable cause = unwrap(error);
+        if (cause instanceof CanaryRejectedException rejected) {
+            return new DeployError("ROLLED_BACK", rejected.getMessage(), rejected.getLogs());
+        }
         if (cause instanceof DeploymentFailedException failed) {
             return new DeployError("FAILED", failed.getMessage(), failed.getLogs());
         }
