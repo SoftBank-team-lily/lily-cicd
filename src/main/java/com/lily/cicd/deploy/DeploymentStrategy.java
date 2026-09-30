@@ -9,8 +9,8 @@ import java.util.Map;
  * 새 이미지를 클러스터에 올리고 트래픽을 옮기는 규칙.
  *
  * <p>기본 구현은 {@link BlueGreenDeploymentStrategy} 다.
- * Canary 처럼 다른 규칙을 쓰려면 이 타입의 Spring 빈을 하나 등록한다.
- * 같은 타입의 빈이 있으면 기본 구현은 만들어지지 않는다.
+ * {@code lily.deploy.strategy=canary} 이면 {@link CanaryDeploymentStrategy} 를 쓴다.
+ * 같은 타입의 빈을 직접 등록하면 그 구현이 우선한다.
  *
  * <p>엔진이 부르는 순서:
  * DB 준비, {@link #plan}, {@link #applyTarget}, {@link #awaitReady},

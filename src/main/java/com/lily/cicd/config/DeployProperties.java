@@ -15,6 +15,10 @@ public class DeployProperties {
     private String readinessPath = "/actuator/health/readiness";
     private String livenessPath = "/actuator/health/liveness";
     private long readinessTimeoutSeconds = 120;
+    /** {@code blue-green} 또는 {@code canary}. */
+    private String strategy = "blue-green";
+    /** canary 가 받을 트래픽 비율. 1 이상 50 이하. */
+    private int canaryWeightPercent = 20;
 
     public String getAppName() { return appName; }
     public void setAppName(String appName) { this.appName = appName; }
@@ -34,5 +38,13 @@ public class DeployProperties {
     public long getReadinessTimeoutSeconds() { return readinessTimeoutSeconds; }
     public void setReadinessTimeoutSeconds(long readinessTimeoutSeconds) {
         this.readinessTimeoutSeconds = readinessTimeoutSeconds;
+    }
+
+    public String getStrategy() { return strategy; }
+    public void setStrategy(String strategy) { this.strategy = strategy; }
+
+    public int getCanaryWeightPercent() { return canaryWeightPercent; }
+    public void setCanaryWeightPercent(int canaryWeightPercent) {
+        this.canaryWeightPercent = canaryWeightPercent;
     }
 }

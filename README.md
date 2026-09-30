@@ -35,7 +35,7 @@ flowchart TD
 * 트래픽 전환은 Service Selector 변경만으로 수행합니다.
 * 배포 실패 시 기존 서비스는 계속 유지됩니다.
 
-배포 절차 자체는 `DeploymentStrategy` 인터페이스 뒤에 있습니다. 엔진은 요청을 받아 이 인터페이스만 호출하며, 기본 구현은 Blue-Green입니다. Canary처럼 다른 규칙을 쓰려면 같은 타입의 Spring Bean을 하나 등록하면 됩니다. Bean이 있으면 기본 구현은 만들어지지 않습니다.
+배포 절차 자체는 `DeploymentStrategy` 인터페이스 뒤에 있습니다. 엔진은 요청을 받아 이 인터페이스만 호출합니다. 기본값은 Blue-Green이고, `lily.deploy.strategy=canary`이면 Canary를 사용합니다. 같은 타입의 Spring Bean을 직접 등록하면 그 구현이 우선합니다.
 
 ```text
 DeploymentEngine
@@ -47,7 +47,20 @@ DeploymentEngine
   → DeploymentStrategy.retirePrevious
 ```
 
-기본 구현 `BlueGreenDeploymentStrategy`의 슬롯 이름은 `blue`와 `green`입니다. 다른 전략은 `SlotPlan`의 target과 previous에 자기 슬롯 이름을 넣으면 됩니다.
+`BlueGreenDeploymentStrategy`의 슬롯 이름은 `blue`와 `green`입니다. `CanaryDeploymentStrategy`의 슬롯 이름은 `stable`과 `canary`입니다.
+
+### Canary
+
+`lily.deploy.strategy`를 `canary`로 두면 이 전략이 동작합니다. 기본 가중치는 `lily.deploy.canary-weight-percent: 20`이며, 허용 범위는 1 이상 50 이하입니다.
+
+* 첫 배포는 `stable` 슬롯에 파드 5개를 만들고 트래픽 전부를 그 슬롯으로 보냅니다. `canary` 슬롯은 만들지 않습니다.
+* 다음 배포는 새 이미지를 `canary` 슬롯에만 올립니다. `stable`의 이미지는 유지됩니다.
+* 파드 합은 5개입니다. 20%이면 `canary` 1개, `stable` 4개입니다. 1%처럼 1개 미만으로 계산되면 `canary` 파드는 1개를 유지합니다.
+* Service selector는 `app`만 봅니다. 트래픽은 Ready 파드 수 비율로 나뉩니다.
+* `canary`가 Ready가 되기 전에 실패하면 그 Deployment만 삭제하고, `stable`과 Service는 유지합니다.
+* `stable`은 트래픽 전환 이후에도 종료하지 않습니다.
+
+`APP_COLOR`에는 슬롯 이름인 `stable` 또는 `canary`가 들어갑니다.
 
 ---
 
@@ -391,7 +404,8 @@ SPRING_PROFILES_ACTIVE=local
 | 배포 엔진              | `DeploymentEngine`         |
 | 배포 전략 인터페이스        | `DeploymentStrategy`       |
 | Blue-Green 구현       | `BlueGreenDeploymentStrategy` |
+| Canary 구현           | `CanaryDeploymentStrategy` |
 | 확장 모듈 인터페이스        | `com.lily.cicd.module`     |
 | 배포 API             | `POST /api/deployments`    |
 | 결과 DTO             | `DeploymentResultDto`      |
-| 배포 테스트             | `K8sBlueGreenDeployerTest` |
+| 배포 테스트             | `K8sBlueGreenDeployerTest`, `CanaryDeploymentStrategyTest` |
