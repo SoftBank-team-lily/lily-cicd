@@ -18,4 +18,4 @@ jobs:
           java-version: "21"
           cache: gradle
       - name: Unit tests must exceed 75% line coverage
-        run: ./gradlew check --no-daemon
+        run: bash ./gradlew check --no-daemon
