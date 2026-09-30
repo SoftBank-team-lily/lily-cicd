@@ -2,6 +2,15 @@
 
 **Target Version:** 0.1.0
 
+배포 요청은 Deployment Engine으로 들어오고, 엔진이 DeploymentStrategy를 거쳐 Kubernetes Platform에 반영합니다.
+
+```mermaid
+flowchart TD
+  request["Deploy Request"] --> engine["Deployment Engine"]
+  engine --> strategy["DeploymentStrategy"]
+  strategy --> platform["Kubernetes Platform"]
+```
+
 # 배포 전략
 
 ## 전제 사항
