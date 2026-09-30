@@ -355,6 +355,20 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
                 .build();
     }
 
+    /** canary 판정에서 떨어진 새 슬롯을 지운다. Service selector 는 바꾸지 않았으므로 트래픽은 이전 색 그대로다 */
+    @Override
+    public void discardTarget(String namespace, String appName, SlotPlan plan, List<String> logs) {
+        String name = deploymentName(appName, plan.target());
+        try {
+            k8sClient.apps().deployments().inNamespace(namespace).withName(name).delete();
+            logs.add("canary: deleted rejected deployment " + name + ", traffic stays on " + plan.previous());
+        } catch (KubernetesClientException e) {
+            log.error("discard failed. namespace={} name={} code={} message={}",
+                    namespace, name, e.getCode(), e.getMessage(), e);
+            logs.add("canary: delete failed " + name + " — " + e.getMessage());
+        }
+    }
+
     private void deleteTargetQuietly(String namespace, String name, List<String> logs) {
         try {
             k8sClient.apps().deployments().inNamespace(namespace).withName(name).delete();

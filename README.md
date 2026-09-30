@@ -42,12 +42,17 @@ DeploymentEngine
   → DeploymentStrategy.plan
   → DeploymentStrategy.applyTarget
   → DeploymentStrategy.awaitReady
+  → Canary 판정 (블루그린, 이전 색이 떠 있을 때)
   → DeploymentStrategy.switchTraffic
   → Router / Monitoring
   → DeploymentStrategy.retirePrevious
 ```
 
 `BlueGreenDeploymentStrategy`의 슬롯 이름은 `blue`와 `green`입니다. `CanaryDeploymentStrategy`의 슬롯 이름은 `stable`과 `canary`입니다.
+
+### 블루그린 전환 전 Canary 판정
+
+새 색이 Ready가 되면 바로 전환하지 않고, 사용자 트래픽 10%를 ingress-nginx canary Ingress로 새 색에 보냅니다. 30초 동안 새 색과 이전 색에 같은 요청을 보내 에러율과 p95를 비교합니다. 새 Pod의 재시작과 Ready 이탈도 확인합니다. 통과하면 100%로 전환하고, 실패하면 새 Deployment를 지우고 이번 스키마 변경을 되돌립니다. 이때 응답은 `422 ROLLED_BACK`이고 트래픽은 이전 색에 그대로 있습니다. 진행 단계는 `GET /api/deployments/{app}/progress`로 봅니다. 기준과 설정은 [docs/canary-analysis.md](docs/canary-analysis.md)에 있습니다.
 
 ### Canary
 

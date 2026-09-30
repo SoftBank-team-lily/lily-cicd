@@ -27,7 +27,7 @@ class DeployControllerTest {
 
     @Test
     void 성공하면_200과_결과를_반환한다() {
-        DeployController controller = new DeployController(engine, rollbacker);
+        DeployController controller = new DeployController(engine, rollbacker, new DeployProgress());
         DeploymentResultDto dto = new DeploymentResultDto("SUCCESS", "canary", "http://lily.domain.com", List.of("ok"));
         when(engine.deploy(any(DeployCommand.class))).thenReturn(CompletableFuture.completedFuture(dto));
 
@@ -39,7 +39,7 @@ class DeployControllerTest {
 
     @Test
     void 잘못된_요청은_400이다() {
-        DeployController controller = new DeployController(engine, rollbacker);
+        DeployController controller = new DeployController(engine, rollbacker, new DeployProgress());
         when(engine.deploy(any(DeployCommand.class)))
                 .thenReturn(CompletableFuture.failedFuture(new IllegalArgumentException("appName")));
 
@@ -52,7 +52,7 @@ class DeployControllerTest {
 
     @Test
     void 배포_실패는_500과_로그를_반환한다() {
-        DeployController controller = new DeployController(engine, rollbacker);
+        DeployController controller = new DeployController(engine, rollbacker, new DeployProgress());
         when(engine.deploy(any(DeployCommand.class))).thenReturn(CompletableFuture.failedFuture(
                 new DeploymentFailedException("boom", List.of("step1"), null)));
 
@@ -66,7 +66,7 @@ class DeployControllerTest {
 
     @Test
     void 원인이_없는_실패는_500이다() {
-        DeployController controller = new DeployController(engine, rollbacker);
+        DeployController controller = new DeployController(engine, rollbacker, new DeployProgress());
         when(engine.deploy(any(DeployCommand.class)))
                 .thenReturn(CompletableFuture.failedFuture(new IllegalStateException()));
 
@@ -80,7 +80,7 @@ class DeployControllerTest {
 
     @Test
     void 롤백_성공은_200이고_본문이_없으면_기본값으로_부른다() {
-        DeployController controller = new DeployController(engine, rollbacker);
+        DeployController controller = new DeployController(engine, rollbacker, new DeployProgress());
         DeploymentResultDto dto = new DeploymentResultDto("ROLLED_BACK", "blue", "http://lily.domain.com", "2", List.of());
         when(rollbacker.rollback("lily", null, false)).thenReturn(CompletableFuture.completedFuture(dto));
 
@@ -92,7 +92,7 @@ class DeployControllerTest {
 
     @Test
     void 롤백_거절은_409와_로그를_반환한다() {
-        DeployController controller = new DeployController(engine, rollbacker);
+        DeployController controller = new DeployController(engine, rollbacker, new DeployProgress());
         when(rollbacker.rollback("lily", "apps", true))
                 .thenThrow(new DeployConflictException("롤백할 수 없다", List.of("rollback: refused")));
 
@@ -107,7 +107,7 @@ class DeployControllerTest {
 
     @Test
     void 롤백을_지원하지_않는_전략은_400이다() {
-        DeployController controller = new DeployController(engine, rollbacker);
+        DeployController controller = new DeployController(engine, rollbacker, new DeployProgress());
         when(rollbacker.rollback("lily", null, false)).thenReturn(
                 CompletableFuture.failedFuture(new UnsupportedOperationException("canary")));
 
@@ -116,7 +116,7 @@ class DeployControllerTest {
 
     @Test
     void 상태_조회는_200이고_잘못된_이름은_400이다() {
-        DeployController controller = new DeployController(engine, rollbacker);
+        DeployController controller = new DeployController(engine, rollbacker, new DeployProgress());
         RollbackEngine.ReleaseStatus status = new RollbackEngine.ReleaseStatus(
                 "lily", "default", "green", List.of(), true, null);
         when(rollbacker.status("lily", null)).thenReturn(status);
