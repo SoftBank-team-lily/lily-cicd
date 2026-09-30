@@ -1,6 +1,7 @@
 package com.lily.cicd.deploy;
 
 import com.lily.cicd.config.DeployProperties;
+import com.lily.cicd.release.DeployConflictException;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
 import io.fabric8.kubernetes.api.model.IntOrString;
@@ -12,6 +13,9 @@ import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.fabric8.kubernetes.client.KubernetesClientTimeoutException;
+import io.fabric8.kubernetes.client.dsl.base.PatchContext;
+import io.fabric8.kubernetes.client.dsl.base.PatchType;
+import io.fabric8.kubernetes.client.utils.Serialization;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -188,6 +192,53 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
                     "이전 deployment scale down 실패: " + name + ". 트래픽은 새 color 를 보고 있다",
                     logs, e);
         }
+    }
+
+    /**
+     * 지금 selector 색의 반대 슬롯이 되살릴 대상이다. replica 0 으로 남겨 둔 Deployment 가 있어야 한다.
+     */
+    @Override
+    public SlotPlan planRollback(String namespace, String appName, List<String> logs) {
+        Service service = k8sClient.services().inNamespace(namespace).withName(serviceName(appName)).get();
+        String color = service == null || service.getSpec() == null || service.getSpec().getSelector() == null
+                ? null : service.getSpec().getSelector().get("color");
+        if (!COLOR_BLUE.equals(color) && !COLOR_GREEN.equals(color)) {
+            throw new DeployConflictException(appName + " 의 blue-green Service 가 없다 (color=" + color + ")");
+        }
+        String previous = COLOR_BLUE.equals(color) ? COLOR_GREEN : COLOR_BLUE;
+        if (k8sClient.apps().deployments().inNamespace(namespace).withName(deploymentName(appName, previous)).get() == null) {
+            throw new DeployConflictException("되살릴 이전 슬롯이 없다: " + deploymentName(appName, previous));
+        }
+        logs.add("rollback: active=" + color + " -> restore=" + previous);
+        return new SlotPlan(previous, color);
+    }
+
+    /**
+     * 이전 슬롯을 replica 1 로 올리고 Ready 를 기다린 뒤 selector 의 color 만 바꾼다.
+     * Ready 가 되지 않으면 다시 0 으로 내리고 트래픽은 건드리지 않는다.
+     */
+    @Override
+    public void restorePrevious(String namespace, String appName, SlotPlan plan, List<String> logs) {
+        String name = deploymentName(appName, plan.target());
+        long timeout = properties.getReadinessTimeoutSeconds();
+        var deployment = k8sClient.apps().deployments().inNamespace(namespace).withName(name);
+        deployment.scale(REPLICAS);
+        logs.add("rollback: scaled " + name + " replicas=" + REPLICAS);
+        try {
+            if (deployment.waitUntilReady(timeout, TimeUnit.SECONDS) == null) {
+                throw new KubernetesClientTimeoutException("Deployment", name, namespace, timeout, TimeUnit.SECONDS);
+            }
+        } catch (KubernetesClientException e) {
+            log.error("rollback readiness failed. namespace={} name={} message={}", namespace, name, e.getMessage(), e);
+            deployment.scale(0);
+            logs.add("rollback: " + name + " not ready in " + timeout + "s, scaled back to 0. traffic unchanged");
+            throw new DeploymentFailedException("이전 슬롯이 " + timeout + "초 안에 Ready 가 되지 않음: " + name, logs, e);
+        }
+        logs.add("rollback: deployment ready " + name);
+        k8sClient.services().inNamespace(namespace).withName(serviceName(appName))
+                .patch(PatchContext.of(PatchType.JSON_MERGE),
+                        Serialization.asJson(Map.of("spec", Map.of("selector", Map.of("color", plan.target())))));
+        logs.add("rollback: service " + serviceName(appName) + " selector color=" + plan.target());
     }
 
     private Deployment buildDeployment(

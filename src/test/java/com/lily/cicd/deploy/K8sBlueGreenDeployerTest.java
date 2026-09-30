@@ -10,6 +10,9 @@ import com.lily.cicd.module.NoopDatabaseProvisioner;
 import com.lily.cicd.module.NoopDeployMonitor;
 import com.lily.cicd.module.Slf4jDeployLog;
 import com.lily.cicd.module.TrafficRouter;
+import com.lily.cicd.release.DeployLock;
+import com.lily.cicd.release.ReleaseStore;
+import com.lily.cicd.schema.SchemaMigrator;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.IntOrString;
 import io.fabric8.kubernetes.api.model.Service;
@@ -51,6 +54,7 @@ class K8sBlueGreenDeployerTest {
     private static KubernetesServer server;
 
     private KubernetesClient client;
+    private SchemaMigrator schemaMigrator = new SchemaMigrator();
     private ScheduledExecutorService readyMarker;
 
     @BeforeAll
@@ -70,6 +74,8 @@ class K8sBlueGreenDeployerTest {
         client.apps().deployments().inNamespace(NAMESPACE).delete();
         client.services().inNamespace(NAMESPACE).delete();
         client.network().v1().ingresses().inNamespace(NAMESPACE).delete();
+        client.configMaps().inNamespace(NAMESPACE).delete();
+        client.leases().inNamespace(NAMESPACE).delete();
     }
 
     @AfterEach
@@ -300,7 +306,10 @@ class K8sBlueGreenDeployerTest {
                 new NoopDatabaseProvisioner(),
                 new NginxIngressRouter(client),
                 new Slf4jDeployLog(),
-                new NoopDeployMonitor())
+                new NoopDeployMonitor(),
+                new SchemaMigrator(),
+                new ReleaseStore(client),
+                new DeployLock(client))
                 .deploy(APP, IMAGE, 8080)
                 .join();
 
@@ -334,7 +343,10 @@ class K8sBlueGreenDeployerTest {
                 database,
                 router,
                 deployLog,
-                monitor);
+                monitor,
+                schemaMigrator,
+                new ReleaseStore(client),
+                new DeployLock(client));
     }
 
     private void givenService(String color) {

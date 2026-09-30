@@ -9,6 +9,9 @@ public final class DeployStages {
     public static final String STARTED = "started";
     public static final String DATABASE = "database";
     public static final String COLOR = "color";
+    /** 스키마 마이그레이션. 롤백에서는 스키마 되돌리기 */
+    public static final String MIGRATION = "migration";
+    public static final String ROLLBACK = "rollback";
     public static final String DEPLOYMENT = "deployment";
     public static final String READY = "ready";
     public static final String SERVICE = "service";

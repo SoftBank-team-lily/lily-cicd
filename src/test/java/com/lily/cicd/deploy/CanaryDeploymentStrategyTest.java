@@ -6,6 +6,9 @@ import com.lily.cicd.module.NginxIngressRouter;
 import com.lily.cicd.module.NoopDatabaseProvisioner;
 import com.lily.cicd.module.NoopDeployMonitor;
 import com.lily.cicd.module.Slf4jDeployLog;
+import com.lily.cicd.release.DeployLock;
+import com.lily.cicd.release.ReleaseStore;
+import com.lily.cicd.schema.SchemaMigrator;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
@@ -59,6 +62,8 @@ class CanaryDeploymentStrategyTest {
         client.apps().deployments().inNamespace(NAMESPACE).delete();
         client.services().inNamespace(NAMESPACE).delete();
         client.network().v1().ingresses().inNamespace(NAMESPACE).delete();
+        client.configMaps().inNamespace(NAMESPACE).delete();
+        client.leases().inNamespace(NAMESPACE).delete();
     }
 
     @AfterEach
@@ -215,7 +220,10 @@ class CanaryDeploymentStrategyTest {
                 database,
                 new NginxIngressRouter(client),
                 new Slf4jDeployLog(),
-                new NoopDeployMonitor());
+                new NoopDeployMonitor(),
+                new SchemaMigrator(),
+                new ReleaseStore(client),
+                new DeployLock(client));
     }
 
     private void startReadyMarker() {
