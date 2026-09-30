@@ -80,7 +80,8 @@ public class DeploymentEngine {
         List<String> logs = new ArrayList<>();
         String namespace = firstNonBlank(command.namespace(), properties.getNamespace());
         String appName = command.appName();
-        String host = appName + "." + firstNonBlank(command.domain(), properties.getDomain());
+        String host = firstNonBlank(command.host(),
+                appName + "." + firstNonBlank(command.domain(), properties.getDomain()));
         DeployContext context = new DeployContext(
                 appName,
                 namespace,
@@ -216,7 +217,8 @@ public class DeploymentEngine {
                 command.appVersion(),
                 command.imagePullSecret(),
                 command.extraEnv() == null ? Map.of() : command.extraEnv(),
-                command.database());
+                command.database(),
+                command.host());
     }
 
     private void validate(DeployCommand command) {
