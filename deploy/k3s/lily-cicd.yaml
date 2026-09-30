@@ -1,0 +1,119 @@
+# lily-cicd 를 k3s 에 올리는 매니페스트. 적용 방법은 같은 폴더의 README.md
+#
+# - 클러스터 안에서 돌기 때문에 kubeconfig 없이 ServiceAccount 로 k8s API 를 호출한다
+# - 배포 요청마다 namespace 가 달라질 수 있어서 ClusterRole 로 권한을 준다.
+#   코드가 쓰는 리소스(Deployment, Service, Ingress)만 연다
+# - 클러스터 내부 전용 (ClusterIP). lily-builder 는 http://lily-cicd.lily-system.svc 로 호출한다
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lily-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lily-cicd
+  namespace: lily-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lily-cicd
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "create", "update", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lily-cicd
+subjects:
+  - kind: ServiceAccount
+    name: lily-cicd
+    namespace: lily-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lily-cicd
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lily-cicd
+  namespace: lily-system
+  labels:
+    app: lily-cicd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lily-cicd
+  template:
+    metadata:
+      labels:
+        app: lily-cicd
+    spec:
+      serviceAccountName: lily-cicd
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: lily-cicd
+          # ECR 에 올린 이미지로 바꾼다
+          image: <ACCOUNT_ID>.dkr.ecr.ap-northeast-2.amazonaws.com/lily-cicd:latest
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            # lily-db-provisioner 연동. 두 값을 빼면 DB 없이 배포한다 (NoopDatabaseProvisioner)
+            - name: LILY_DATABASE_PROVISIONER_URL
+              value: http://db-provisioner.lily-system.svc
+            - name: LILY_DATABASE_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  # lily-db-provisioner 배포 때 만든 Secret 의 토큰을 같이 쓴다
+                  name: db-provisioner-env
+                  key: PROVISIONER_API_TOKEN
+            # 배포 전략: blue-green 또는 canary
+            - name: LILY_DEPLOY_STRATEGY
+              value: blue-green
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              memory: 512Mi
+          # actuator 가 없어서 포트가 열렸는지로 판단한다
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lily-cicd
+  namespace: lily-system
+spec:
+  type: ClusterIP
+  selector:
+    app: lily-cicd
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
