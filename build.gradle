@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'jacoco'
     id 'org.springframework.boot' version '3.4.4'
     id 'io.spring.dependency-management' version '1.1.7'
 }
@@ -22,6 +23,64 @@ dependencies {
     testImplementation 'io.fabric8:kubernetes-server-mock:6.13.5'
 }
 
-tasks.named('test') { useJUnitPlatform() }
+jacoco {
+    toolVersion = '0.8.12'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    finalizedBy tasks.named('jacocoTestReport')
+}
+
+tasks.named('jacocoTestReport') {
+    dependsOn tasks.named('test')
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
+tasks.register('verifyLineCoverage') {
+    group = 'verification'
+    description = '라인 커버리지가 75%를 넘지 않으면 실패한다.'
+    dependsOn tasks.named('jacocoTestReport')
+    doLast {
+        def report = layout.buildDirectory.file('reports/jacoco/test/jacocoTestReport.xml').get().asFile
+        def factory = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+        factory.setFeature('http://apache.org/xml/features/nonvalidating/load-external-dtd', false)
+        factory.setFeature('http://xml.org/sax/features/external-general-entities', false)
+        factory.setFeature('http://xml.org/sax/features/external-parameter-entities', false)
+        def doc = factory.newDocumentBuilder().parse(report)
+        def counters = doc.documentElement.childNodes
+        def covered = 0d
+        def missed = 0d
+        def found = false
+        for (int i = 0; i < counters.length; i++) {
+            def node = counters.item(i)
+            if (node.nodeName == 'counter' && node.getAttribute('type') == 'LINE') {
+                covered = node.getAttribute('covered').toDouble()
+                missed = node.getAttribute('missed').toDouble()
+                found = true
+            }
+        }
+        if (!found) {
+            throw new GradleException('JaCoCo 리포트에서 LINE 카운터를 찾지 못했다')
+        }
+        def total = covered + missed
+        if (total == 0d) {
+            throw new GradleException('JaCoCo 라인 커버리지를 계산할 수 없다')
+        }
+        def ratio = covered / total
+        def percent = String.format('%.2f', ratio * 100d)
+        logger.lifecycle("Line coverage: ${percent}% (${covered as int}/${total as int})")
+        if (ratio <= 0.75d) {
+            throw new GradleException("라인 커버리지 ${percent}% 는 75%를 넘겨야 한다")
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyLineCoverage')
+}
 
 tasks.named('bootJar') { archiveFileName = 'app.jar' }

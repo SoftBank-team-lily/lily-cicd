@@ -15,3 +15,7 @@ lily:
     readiness-path: /actuator/health/readiness
     liveness-path: /actuator/health/liveness
     readiness-timeout-seconds: 120
+    # blue-green 또는 canary. 다른 DeploymentStrategy 빈이 있으면 그 빈이 우선한다.
+    strategy: blue-green
+    # canary 일 때 새 버전이 받는 비율. 파드 5개 중 이 비율만큼 canary 에 둔다.
+    canary-weight-percent: 20

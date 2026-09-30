@@ -1,6 +1,7 @@
 package com.lily.cicd.config;
 
 import com.lily.cicd.deploy.BlueGreenDeploymentStrategy;
+import com.lily.cicd.deploy.CanaryDeploymentStrategy;
 import com.lily.cicd.deploy.DeploymentStrategy;
 import com.lily.cicd.module.DatabaseProvisioner;
 import com.lily.cicd.module.DeployLog;
@@ -24,7 +25,15 @@ public class ModuleConfiguration {
     @Bean
     @ConditionalOnMissingBean(DeploymentStrategy.class)
     public DeploymentStrategy deploymentStrategy(KubernetesClient kubernetesClient, DeployProperties properties) {
-        return new BlueGreenDeploymentStrategy(kubernetesClient, properties);
+        String name = properties.getStrategy() == null ? "" : properties.getStrategy().trim();
+        if (name.isEmpty() || "blue-green".equals(name)) {
+            return new BlueGreenDeploymentStrategy(kubernetesClient, properties);
+        }
+        if ("canary".equals(name)) {
+            return new CanaryDeploymentStrategy(kubernetesClient, properties);
+        }
+        throw new IllegalArgumentException(
+                "lily.deploy.strategy 는 blue-green 또는 canary 여야 한다: " + name);
     }
 
     @Bean
