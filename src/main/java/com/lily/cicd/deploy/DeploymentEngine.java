@@ -215,9 +215,10 @@ public class DeploymentEngine {
             recorder.record(context, logs, DeployStages.SCALE_DOWN, last(logs));
 
             String url = properties.getUrlScheme() + "://" + host;
+            String active = strategy.finalSlot(plan);
             recorder.record(context, logs, DeployStages.SUCCEEDED,
-                    "cutover complete. active=" + plan.target() + " host=" + host + " url=" + url);
-            return new DeploymentResultDto("SUCCESS", plan.target(), url,
+                    "cutover complete. active=" + active + " host=" + host + " url=" + url);
+            return new DeploymentResultDto("SUCCESS", active, url,
                     SchemaVersions.format(change.to()), List.copyOf(logs));
             }
         } catch (RuntimeException e) {

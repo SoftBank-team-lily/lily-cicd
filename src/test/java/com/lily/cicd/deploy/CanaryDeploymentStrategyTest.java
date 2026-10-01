@@ -101,45 +101,50 @@ class CanaryDeploymentStrategyTest {
     }
 
     @Test
-    void 다음_배포는_canary에만_새_이미지를_올리고_stable은_유지한다() {
+    void 다음_배포는_비율을_100까지_올린_뒤_새_이미지를_stable로_남긴다() {
         startReadyMarker();
         engine(8, 20).deploy(APP, IMAGE, 8080).join();
 
         DeploymentResultDto result = engine(8, 20).deploy(APP, IMAGE_V2, 8080).join();
 
         assertEquals("SUCCESS", result.status());
-        assertEquals("canary", result.activeColor());
+        assertEquals("stable", result.activeColor());
+        assertNull(deployment("lily-canary"));
 
         Deployment stable = deployment("lily-stable");
-        Deployment canary = deployment("lily-canary");
-        assertEquals(IMAGE, stable.getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
-        assertEquals(IMAGE_V2, canary.getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
-        assertEquals(4, stable.getSpec().getReplicas());
-        assertEquals(1, canary.getSpec().getReplicas());
-        assertEquals("canary", env(canary, "APP_COLOR"));
+        assertEquals(IMAGE_V2, stable.getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
+        assertEquals(CanaryDeploymentStrategy.TOTAL_REPLICAS, stable.getSpec().getReplicas());
+        assertEquals("stable", env(stable, "APP_COLOR"));
         assertEquals(Map.of("app", APP),
                 client.services().inNamespace(NAMESPACE).withName("lily-svc").get().getSpec().getSelector());
-        assertTrue(result.logs().stream().anyMatch(line -> line.contains("keep lily-stable")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: step canary=1 stable=4")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: step canary=5 stable=0")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("promoted")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("stable serves the new image")));
     }
 
     @Test
-    void 가중치가_1퍼센트여도_canary_파드는_1개다() {
+    void 가중치가_1퍼센트여도_시작_파드는_1개다() {
         startReadyMarker();
         engine(8, 1).deploy(APP, IMAGE, 8080).join();
-        engine(8, 1).deploy(APP, IMAGE_V2, 8080).join();
+        DeploymentResultDto result = engine(8, 1).deploy(APP, IMAGE_V2, 8080).join();
 
-        assertEquals(1, deployment("lily-canary").getSpec().getReplicas());
-        assertEquals(4, deployment("lily-stable").getSpec().getReplicas());
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: step canary=1 stable=4")));
+        assertNull(deployment("lily-canary"));
+        assertEquals(CanaryDeploymentStrategy.TOTAL_REPLICAS, deployment("lily-stable").getSpec().getReplicas());
+        assertEquals(IMAGE_V2, deployment("lily-stable").getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
     }
 
     @Test
-    void 가중치_40퍼센트는_canary_2개와_stable_3개다() {
+    void 가중치_40퍼센트는_canary_2개에서_시작한다() {
         startReadyMarker();
         engine(8, 40).deploy(APP, IMAGE, 8080).join();
-        engine(8, 40).deploy(APP, IMAGE_V2, 8080).join();
+        DeploymentResultDto result = engine(8, 40).deploy(APP, IMAGE_V2, 8080).join();
 
-        assertEquals(2, deployment("lily-canary").getSpec().getReplicas());
-        assertEquals(3, deployment("lily-stable").getSpec().getReplicas());
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: step canary=2 stable=3")));
+        assertTrue(result.logs().stream().noneMatch(line -> line.contains("canary: step canary=1 stable=4")));
+        assertNull(deployment("lily-canary"));
+        assertEquals(IMAGE_V2, deployment("lily-stable").getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
     }
 
     @Test
@@ -184,7 +189,7 @@ class CanaryDeploymentStrategyTest {
     }
 
     @Test
-    void DB_환경변수는_canary에_들어가고_요청값이_이긴다() {
+    void DB_환경변수는_승격된_stable에_남고_요청값이_이긴다() {
         startReadyMarker();
         DatabaseProvisioner database = context -> Map.of(
                 "DB_URL", "jdbc:postgresql://db/lily",
@@ -196,13 +201,14 @@ class CanaryDeploymentStrategyTest {
                 Map.of("SPRING_PROFILES_ACTIVE", "local"));
         engine(8, 20, database).deploy(command).join();
 
-        Deployment canary = deployment("lily-canary");
-        assertEquals("jdbc:postgresql://db/lily", env(canary, "DB_URL"));
-        assertEquals("local", env(canary, "SPRING_PROFILES_ACTIVE"));
-        assertEquals("canary", env(canary, "APP_COLOR"));
-        assertEquals("2.0.0", env(canary, "APP_VERSION"));
-        assertEquals("8080", env(canary, "SERVER_PORT"));
-        assertEquals("ecr", canary.getSpec().getTemplate().getSpec().getImagePullSecrets().get(0).getName());
+        Deployment stable = deployment("lily-stable");
+        assertNull(deployment("lily-canary"));
+        assertEquals("jdbc:postgresql://db/lily", env(stable, "DB_URL"));
+        assertEquals("local", env(stable, "SPRING_PROFILES_ACTIVE"));
+        assertEquals("stable", env(stable, "APP_COLOR"));
+        assertEquals("2.0.0", env(stable, "APP_VERSION"));
+        assertEquals("8080", env(stable, "SERVER_PORT"));
+        assertEquals("ecr", stable.getSpec().getTemplate().getSpec().getImagePullSecrets().get(0).getName());
     }
 
     private DeploymentEngine engine(long timeoutSeconds, int weightPercent) {

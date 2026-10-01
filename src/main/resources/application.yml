@@ -31,7 +31,7 @@ lily:
     drain-seconds: 5
     # blue-green 또는 canary. 다른 DeploymentStrategy 빈이 있으면 그 빈이 우선한다.
     strategy: blue-green
-    # canary 일 때 새 버전이 받는 비율. 파드 5개 중 이 비율만큼 canary 에 둔다.
+    # canary 일 때 새 버전이 받기 시작하는 비율. 이후 파드 1개씩 올려 100% 가 되면 stable 로 승격한다.
     canary-weight-percent: 20
     # 블루그린 전환 전 canary 판정. 이전 버전이 떠 있을 때만 한다. docs/canary-analysis.md
     canary-analysis:

@@ -29,7 +29,7 @@ public class DeployProperties {
     private int drainSeconds = 5;
     /** {@code blue-green} 또는 {@code canary}. */
     private String strategy = "blue-green";
-    /** canary 가 받을 트래픽 비율. 1 이상 50 이하. */
+    /** canary 가 받기 시작하는 비율. 이후 100%까지 올린다. 1 이상 50 이하. */
     private int canaryWeightPercent = 20;
 
     public String getAppName() { return appName; }
