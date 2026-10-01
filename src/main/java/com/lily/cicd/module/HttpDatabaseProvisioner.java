@@ -54,6 +54,17 @@ public final class HttpDatabaseProvisioner implements DatabaseProvisioner {
         return response.env();
     }
 
+    /** projectId(= appName) 로 찾아 지운다. 프로비저너가 DB 와 계정을 DROP 하고 비밀번호도 지운다 */
+    @Override
+    public boolean release(String appName) {
+        Optional<Database> existing = find(appName);
+        if (existing.isEmpty()) {
+            return false;
+        }
+        http.delete().uri("/api/databases/{id}", existing.get().id()).retrieve().toBodilessEntity();
+        return true;
+    }
+
     private Database findOrCreate(String projectId, String engine) {
         Optional<Database> existing = find(projectId);
         // FAILED 는 같은 projectId 로 다시 POST 하면 프로비저너가 정리하고 새로 만든다

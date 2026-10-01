@@ -52,9 +52,10 @@ rules:
     resources: ["configmaps"]
     verbs: ["get", "list", "create", "update", "delete"]
   # 슬롯별 DB 접속 정보 ({app}-{slot}-db). Deployment 스펙에 비밀번호를 평문으로 두지 않으려고 쓴다
+  # delete: 앱 삭제 (DELETE /api/apps/{app})
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "create", "update"]
+    verbs: ["get", "create", "update", "delete"]
   # 같은 앱의 배포·롤백 직렬화 (lily-lock-{app})
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

@@ -14,4 +14,13 @@ import java.util.Map;
 public interface DatabaseProvisioner {
 
     Map<String, String> prepare(DeployContext context);
+
+    /**
+     * 앱을 지울 때 그 앱의 DB 도 지운다. 되돌릴 수 없다.
+     *
+     * @return 지웠으면 true. DB 가 없거나 DB 모듈이 없으면 false
+     */
+    default boolean release(String appName) {
+        return false;
+    }
 }

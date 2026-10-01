@@ -1,5 +1,6 @@
 package com.lily.cicd.config;
 
+import com.lily.cicd.deploy.AppRemover;
 import com.lily.cicd.deploy.BlueGreenDeploymentStrategy;
 import com.lily.cicd.deploy.CanaryAnalysis;
 import com.lily.cicd.deploy.CanaryDeploymentStrategy;
@@ -87,6 +88,12 @@ public class ModuleConfiguration {
     @Bean
     public DeployLock deployLock(KubernetesClient kubernetesClient) {
         return new DeployLock(kubernetesClient);
+    }
+
+    @Bean
+    public AppRemover appRemover(KubernetesClient kubernetesClient, DeployLock deployLock, DeployProgress progress,
+                                 DatabaseProvisioner databaseProvisioner) {
+        return new AppRemover(kubernetesClient, deployLock, progress, databaseProvisioner);
     }
 
     @Bean

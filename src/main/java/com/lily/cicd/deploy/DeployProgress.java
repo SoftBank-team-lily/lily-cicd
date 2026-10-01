@@ -94,6 +94,13 @@ public class DeployProgress {
         };
     }
 
+    /** 앱을 지운 뒤. 기록 ConfigMap 은 지우는 쪽이 같이 지운다 */
+    public void forget(String namespace, String appName) {
+        String key = key(namespace, appName);
+        latest.remove(key);
+        live.remove(key);
+    }
+
     public Optional<Snapshot> get(String namespace, String appName) {
         Snapshot cached = latest.get(key(namespace, appName));
         if (cached != null) {
