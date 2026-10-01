@@ -8,6 +8,8 @@ import io.fabric8.kubernetes.api.model.Secret;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServiceBuilder;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
+import io.fabric8.kubernetes.api.model.networking.v1.Ingress;
+import io.fabric8.kubernetes.api.model.networking.v1.IngressBuilder;
 import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientException;
@@ -22,18 +24,17 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 새 이미지를 {@code canary} 슬롯에 올리고, Ready 파드 수 비율로 트래픽을 한 칸씩 올린다.
- * Service selector 는 {@code app} 만 본다. 파드 합은 5개라 한 칸은 20%다.
+ * 새 이미지를 {@code canary} 슬롯에 올리고, 입구 비율만 0 에서 100 까지 올린다.
+ * 두 슬롯의 replica 는 {@code lily.deploy.replicas} 그대로다. 본 Service 는 {@code track=stable} 만 본다.
  *
- * <p>시작 비율은 {@code lily.deploy.canary-weight-percent} (1 이상 50 이하)다.
- * 그 다음 1개씩 올려 5개가 되면 새 이미지를 {@code stable} 로 옮기고 canary 는 지운다.
- * 중간이 Ready 가 아니면 canary 를 지우고 stable 을 5개로 되돌린다.
+ * <p>칸은 {@code lily.deploy.canary-weight-percent} (1 이상 50 이하)다.
+ * 100 이 되면 새 이미지를 {@code stable} 로 옮기고 canary Ingress 와 슬롯을 지운다.
+ * 중간이 실패하면 canary 를 지우고 사용자 트래픽은 이전 stable 에 남긴다.
  * 슬롯이 없으면 첫 배포로 보고 {@code stable} 에 전량을 올린다.
  */
 public class CanaryDeploymentStrategy implements DeploymentStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(CanaryDeploymentStrategy.class);
-    static final int TOTAL_REPLICAS = 5;
     static final String TRACK_STABLE = "stable";
     static final String TRACK_CANARY = "canary";
     private static final int SERVICE_PORT = 80;
@@ -73,7 +74,7 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
             logs.add("canary: stable absent -> target=stable weight=100");
             return new SlotPlan(TRACK_STABLE, "");
         }
-        logs.add("canary: stable present -> target=canary weight=" + properties.getCanaryWeightPercent());
+        logs.add("canary: stable present -> target=canary step=" + properties.getCanaryWeightPercent());
         return new SlotPlan(TRACK_CANARY, TRACK_STABLE);
     }
 
@@ -84,7 +85,7 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
             SlotPlan plan,
             Map<String, String> databaseEnv,
             List<String> logs) {
-        int replicas = TRACK_STABLE.equals(plan.target()) ? TOTAL_REPLICAS : canaryReplicas();
+        int replicas = replicas();
         String name = deploymentName(command.appName(), plan.target());
         Map<String, String> plain = plainEnv(command, plan.target());
         Map<String, String> secretEnv = DatabaseSecret.entries(databaseEnv, plain.keySet());
@@ -139,34 +140,43 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
                 finishPromote(command, namespace, logs);
             }
             logs.add("canary: service " + serviceName + " selector app=" + command.appName()
+                    + ",track=" + TRACK_STABLE
                     + " port " + SERVICE_PORT + " -> " + command.targetPort());
-        } catch (KubernetesClientException e) {
-            log.error("failed to switch canary traffic. namespace={} name={} code={} message={}",
-                    namespace, serviceName, e.getCode(), e.getMessage(), e);
+        } catch (RuntimeException e) {
+            log.error("failed to switch canary traffic. namespace={} name={} message={}",
+                    namespace, serviceName, e.getMessage(), e);
             if (TRACK_CANARY.equals(plan.target()) && !replaced) {
                 restoreStable(namespace, command.appName(), logs);
                 logs.add("canary: traffic switch failed. stable 로 되돌림");
             } else {
                 logs.add("canary: traffic switch failed");
             }
+            if (e instanceof DeploymentFailedException failed) {
+                throw failed;
+            }
             throw new DeploymentFailedException("canary 트래픽 전환 실패: " + serviceName, logs, e);
         }
     }
 
     /**
-     * 시작 비율부터 파드 1개씩 올려 새 버전이 5개가 되게 한다. stable 은 그만큼 줄어든다.
+     * 두 슬롯 replica 를 유지한 채 canary Ingress 가중치를 0 에서 100 까지 올린다.
      */
     private void raise(DeployCommand command, String namespace, List<String> logs) {
         String stableName = deploymentName(command.appName(), TRACK_STABLE);
-        String canaryName = deploymentName(command.appName(), TRACK_CANARY);
-        int start = canaryReplicas();
-        scale(namespace, stableName, TOTAL_REPLICAS - start);
-        logs.add(step(start, TOTAL_REPLICAS - start));
-        for (int next = start + 1; next <= TOTAL_REPLICAS; next++) {
-            scale(namespace, canaryName, next);
-            scale(namespace, stableName, TOTAL_REPLICAS - next);
-            waitReady(namespace, canaryName);
-            logs.add(step(next, TOTAL_REPLICAS - next));
+        int count = replicas();
+        scale(namespace, stableName, count);
+        waitReady(namespace, stableName);
+        ensureCanaryService(command, namespace);
+        int step = properties.getCanaryWeightPercent();
+        int weight = 0;
+        while (true) {
+            putWeight(command, namespace, weight);
+            logs.add("canary: weight=" + weight + " stable=" + count + " canary=" + count);
+            if (weight >= 100) {
+                break;
+            }
+            hold(logs);
+            weight = Math.min(100, weight + step);
         }
     }
 
@@ -181,7 +191,7 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
         Map<String, String> secretEnv = secretData(namespace, canaryName);
         Map<String, String> plain = plainEnv(command, TRACK_STABLE);
         DatabaseSecret.apply(k8sClient, namespace, command.appName(), stableName, secretEnv);
-        Deployment stable = buildDeployment(command, namespace, TRACK_STABLE, TOTAL_REPLICAS, plain, secretEnv);
+        Deployment stable = buildDeployment(command, namespace, TRACK_STABLE, replicas(), plain, secretEnv);
         copyAnnotations(namespace, canaryName, stable);
         k8sClient.apps().deployments().inNamespace(namespace).resource(stable).createOrReplace();
         return true;
@@ -192,23 +202,27 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
         String canaryName = deploymentName(command.appName(), TRACK_CANARY);
         String stableName = deploymentName(command.appName(), TRACK_STABLE);
         waitReady(namespace, stableName);
+        deleteCanaryIngress(namespace, command.appName());
         copySchema(namespace, command.appName());
         k8sClient.apps().deployments().inNamespace(namespace).withName(canaryName).delete();
+        k8sClient.services().inNamespace(namespace).withName(canaryServiceName(command.appName())).delete();
         logs.add("canary: promoted " + command.imageUrl() + " to " + stableName
-                + " replicas=" + TOTAL_REPLICAS);
+                + " replicas=" + replicas());
     }
 
-    /** 비율을 올리다 실패하면 이전 이미지의 stable 이 트래픽을 다시 전부 받게 한다. */
+    /** 비율을 올리다 실패하면 canary 입구를 지워 이전 이미지가 트래픽을 다시 전부 받게 한다. */
     private void restoreStable(String namespace, String appName, List<String> logs) {
         String stableName = deploymentName(appName, TRACK_STABLE);
         String canaryName = deploymentName(appName, TRACK_CANARY);
         try {
+            deleteCanaryIngress(namespace, appName);
+            k8sClient.services().inNamespace(namespace).withName(canaryServiceName(appName)).delete();
             k8sClient.apps().deployments().inNamespace(namespace).withName(canaryName).delete();
             Deployment stable = k8sClient.apps().deployments().inNamespace(namespace).withName(stableName).get();
             if (stable != null) {
-                scale(namespace, stableName, TOTAL_REPLICAS);
+                scale(namespace, stableName, replicas());
             }
-            logs.add("canary: restored " + stableName + " replicas=" + TOTAL_REPLICAS);
+            logs.add("canary: restored " + stableName + " replicas=" + replicas());
         } catch (KubernetesClientException e) {
             log.error("failed to restore stable. namespace={} name={} message={}",
                     namespace, stableName, e.getMessage(), e);
@@ -238,8 +252,25 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
         }
     }
 
-    private int canaryReplicas() {
-        return Math.max(1, TOTAL_REPLICAS * properties.getCanaryWeightPercent() / 100);
+    private int replicas() {
+        int replicas = properties.getReplicas();
+        if (replicas < 1 || replicas > 5) {
+            throw new IllegalArgumentException("replicas 는 1 이상 5 이하여야 한다: " + replicas);
+        }
+        return replicas;
+    }
+
+    private void hold(List<String> logs) {
+        int seconds = Math.max(0, properties.getCanaryStepSeconds());
+        if (seconds == 0) {
+            return;
+        }
+        try {
+            Thread.sleep(seconds * 1000L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new DeploymentFailedException("canary 가중치 대기가 중단되었다", logs, e);
+        }
     }
 
     private void ensureService(DeployCommand command, String namespace, String serviceName) {
@@ -251,7 +282,7 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
                 .endMetadata()
                 .withNewSpec()
                     .withType("ClusterIP")
-                    .withSelector(Map.of("app", command.appName()))
+                    .withSelector(Map.of("app", command.appName(), "track", TRACK_STABLE))
                     .addNewPort()
                         .withName("http")
                         .withPort(SERVICE_PORT)
@@ -261,6 +292,77 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
                 .endSpec()
                 .build();
         k8sClient.services().inNamespace(namespace).resource(service).createOrReplace();
+    }
+
+    private void ensureCanaryService(DeployCommand command, String namespace) {
+        String name = canaryServiceName(command.appName());
+        Service service = new ServiceBuilder()
+                .withNewMetadata()
+                    .withName(name)
+                    .withNamespace(namespace)
+                    .addToLabels("app", command.appName())
+                    .addToLabels("track", TRACK_CANARY)
+                .endMetadata()
+                .withNewSpec()
+                    .withType("ClusterIP")
+                    .withSelector(Map.of("app", command.appName(), "track", TRACK_CANARY))
+                    .addNewPort()
+                        .withName("http")
+                        .withPort(SERVICE_PORT)
+                        .withTargetPort(new IntOrString(command.targetPort()))
+                        .withProtocol("TCP")
+                    .endPort()
+                .endSpec()
+                .build();
+        k8sClient.services().inNamespace(namespace).resource(service).createOrReplace();
+    }
+
+    /** ingress-nginx 가 같은 호스트의 본 Ingress 와 짝을 이룬다. weight 0 은 새 슬롯으로 보내지 않는다. */
+    private void putWeight(DeployCommand command, String namespace, int weight) {
+        String name = canaryIngressName(command.appName());
+        Map<String, String> annotations = new LinkedHashMap<>();
+        annotations.put("kubernetes.io/ingress.class", "nginx");
+        annotations.put("nginx.ingress.kubernetes.io/canary", "true");
+        annotations.put("nginx.ingress.kubernetes.io/canary-weight", Integer.toString(weight));
+        Ingress ingress = new IngressBuilder()
+                .withNewMetadata()
+                    .withName(name)
+                    .withNamespace(namespace)
+                    .withAnnotations(annotations)
+                .endMetadata()
+                .withNewSpec()
+                    .withIngressClassName("nginx")
+                    .addNewRule()
+                        .withHost(host(command))
+                        .withNewHttp()
+                            .addNewPath()
+                                .withPath("/")
+                                .withPathType("Prefix")
+                                .withNewBackend()
+                                    .withNewService()
+                                        .withName(canaryServiceName(command.appName()))
+                                        .withNewPort().withNumber(SERVICE_PORT).endPort()
+                                    .endService()
+                                .endBackend()
+                            .endPath()
+                        .endHttp()
+                    .endRule()
+                .endSpec()
+                .build();
+        k8sClient.network().v1().ingresses().inNamespace(namespace).resource(ingress).createOrReplace();
+    }
+
+    private void deleteCanaryIngress(String namespace, String appName) {
+        k8sClient.network().v1().ingresses().inNamespace(namespace).withName(canaryIngressName(appName)).delete();
+    }
+
+    private String host(DeployCommand command) {
+        if (command.host() != null && !command.host().isBlank()) {
+            return command.host();
+        }
+        String domain = command.domain() == null || command.domain().isBlank()
+                ? properties.getDomain() : command.domain();
+        return command.appName() + "." + domain;
     }
 
     private void scale(String namespace, String name, int replicas) {
@@ -276,10 +378,6 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
         if (ready == null) {
             throw new KubernetesClientTimeoutException("Deployment", name, namespace, timeout, TimeUnit.SECONDS);
         }
-    }
-
-    private static String step(int canary, int stable) {
-        return "canary: step canary=" + canary + " stable=" + stable;
     }
 
     /** mock 은 stringData 를 data 로 옮기지 않을 수 있다 */
@@ -433,6 +531,14 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
 
     private static String serviceName(String appName) {
         return appName + "-svc";
+    }
+
+    private static String canaryServiceName(String appName) {
+        return appName + "-canary-svc";
+    }
+
+    private static String canaryIngressName(String appName) {
+        return appName + "-canary-ingress";
     }
 
     private static String firstNonBlank(String preferred, String fallback) {

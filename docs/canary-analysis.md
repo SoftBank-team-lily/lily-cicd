@@ -83,7 +83,7 @@
 | `min-p95-regression-millis` | `100` |
 | `min-samples` | `20` |
 
-`lily.deploy.strategy=canary`(파드 비율을 100%까지 올리는 전략)에서는 이 30초 판정을 하지 않는다. 비율을 올리다 Ready가 아니면 이전 stable 로 되돌린다.
+`lily.deploy.strategy=canary`(입구 비율을 0에서 100까지 올리는 전략)에서는 이 30초 판정을 하지 않는다. 비율을 올리다 실패하면 canary Ingress 를 지우고 이전 stable 로 되돌린다.
 
 ## 확인 (2026-10-01, 실제 k3s, lily-builder 로 lily-blog-sample 배포)
 

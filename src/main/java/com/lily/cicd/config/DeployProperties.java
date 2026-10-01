@@ -29,8 +29,13 @@ public class DeployProperties {
     private int drainSeconds = 5;
     /** {@code blue-green} 또는 {@code canary}. */
     private String strategy = "blue-green";
-    /** canary 가 받기 시작하는 비율. 이후 100%까지 올린다. 1 이상 50 이하. */
+    /**
+     * 카나리 입구 비율을 올리는 칸. 0 에서 이 값씩 100 까지 간다. 1 이상 50 이하.
+     * 슬롯 replica 는 {@link #replicas} 그대로 둔다.
+     */
     private int canaryWeightPercent = 20;
+    /** 카나리 비율을 한 칸 올린 뒤 다음 칸까지 두는 시간(초). 0 이면 다음 칸으로 바로 간다. */
+    private int canaryStepSeconds = 30;
 
     public String getAppName() { return appName; }
     public void setAppName(String appName) { this.appName = appName; }
@@ -68,6 +73,9 @@ public class DeployProperties {
     public void setCanaryWeightPercent(int canaryWeightPercent) {
         this.canaryWeightPercent = canaryWeightPercent;
     }
+
+    public int getCanaryStepSeconds() { return canaryStepSeconds; }
+    public void setCanaryStepSeconds(int canaryStepSeconds) { this.canaryStepSeconds = canaryStepSeconds; }
 
     /** 블루그린에서 전환 전에 새 버전을 일부 트래픽으로 판정한다. docs/canary-analysis.md */
     private CanaryAnalysis canaryAnalysis = new CanaryAnalysis();

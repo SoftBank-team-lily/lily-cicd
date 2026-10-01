@@ -56,14 +56,14 @@ DeploymentEngine
 
 ### Canary
 
-`lily.deploy.strategy`를 `canary`로 두면 이 전략이 동작합니다. `lily.deploy.canary-weight-percent`는 시작 비율이고 기본값은 20이며, 허용 범위는 1 이상 50 이하입니다.
+`lily.deploy.strategy`를 `canary`로 두면 이 전략이 동작합니다. `lily.deploy.canary-weight-percent`는 입구 비율을 올리는 칸이고 기본값은 20이며, 허용 범위는 1 이상 50 이하입니다. 한 칸은 `lily.deploy.canary-step-seconds`(기본 30초) 동안 유지합니다.
 
-* 첫 배포는 `stable` 슬롯에 파드 5개를 만들고 트래픽 전부를 그 슬롯으로 보냅니다. `canary` 슬롯은 만들지 않습니다.
-* 다음 배포는 새 이미지를 `canary`에 올리고, Ready 파드 수를 한 개씩 늘려 비율을 100%까지 올립니다. 파드 합은 5개라 한 칸은 20%입니다. 20%면 1개에서 시작하고, 1%처럼 1개 미만으로 계산돼도 시작은 1개입니다. 40%면 2개에서 시작합니다.
-* Service selector는 `app`만 봅니다. 트래픽은 Ready 파드 수 비율로 나뉩니다.
-* 5개가 되면 그 이미지를 `stable`로 옮기고 `canary`는 지웁니다. 다음 배포는 이 이미지를 기준으로 다시 비율을 올립니다.
-* 시작 단계가 Ready가 되기 전에 실패하면 그 Deployment만 삭제하고, `stable`과 Service는 유지합니다.
-* 비율을 올리다 Ready가 아니면 `canary`를 지우고 `stable`을 5개로 되돌립니다. 사용자 트래픽은 이전 이미지에 남습니다.
+* 첫 배포는 `stable` 슬롯에 `lily.deploy.replicas`(기본 2)개를 만들고 트래픽 전부를 그 슬롯으로 보냅니다. `canary` 슬롯은 만들지 않습니다.
+* 다음 배포는 새 이미지를 `canary`에 같은 replica 수로 올립니다. `stable` replica 는 줄이지 않습니다.
+* 본 Service 는 `track=stable` 만 봅니다. 사용자 비율은 `{app}-canary-ingress` 의 `canary-weight` 로 나눕니다. 0 에서 칸만큼 올려 100 이 됩니다.
+* 100 이 되면 그 이미지를 `stable` 로 옮기고 canary Ingress 와 `canary` 슬롯을 지웁니다. 다음 배포는 이 이미지를 기준으로 다시 비율을 올립니다.
+* Ready 전에 실패하면 그 Deployment 만 삭제하고, `stable` 과 Service 는 유지합니다.
+* 비율을 올리다 실패하면 canary Ingress 와 `canary` 를 지웁니다. 사용자 트래픽은 이전 이미지에 남습니다.
 
 `APP_COLOR`에는 슬롯 이름인 `stable` 또는 `canary`가 들어갑니다.
 

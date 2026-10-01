@@ -86,7 +86,7 @@ class CanaryDeploymentStrategyTest {
         assertNull(deployment("lily-canary"));
 
         Deployment stable = deployment("lily-stable");
-        assertEquals(CanaryDeploymentStrategy.TOTAL_REPLICAS, stable.getSpec().getReplicas());
+        assertEquals(2, stable.getSpec().getReplicas());
         assertEquals("stable", stable.getSpec().getTemplate().getMetadata().getLabels().get("track"));
         assertEquals(IMAGE, stable.getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
         assertEquals("stable", env(stable, "APP_COLOR"));
@@ -94,8 +94,7 @@ class CanaryDeploymentStrategyTest {
                 stable.getSpec().getTemplate().getSpec().getContainers().get(0).getReadinessProbe().getHttpGet().getPath());
 
         Service service = client.services().inNamespace(NAMESPACE).withName("lily-svc").get();
-        assertEquals(Map.of("app", APP), service.getSpec().getSelector());
-        assertNull(service.getSpec().getSelector().get("track"));
+        assertEquals(Map.of("app", APP, "track", "stable"), service.getSpec().getSelector());
         assertEquals(80, service.getSpec().getPorts().get(0).getPort());
         assertEquals(8080, service.getSpec().getPorts().get(0).getTargetPort().getIntVal());
     }
@@ -113,37 +112,43 @@ class CanaryDeploymentStrategyTest {
 
         Deployment stable = deployment("lily-stable");
         assertEquals(IMAGE_V2, stable.getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
-        assertEquals(CanaryDeploymentStrategy.TOTAL_REPLICAS, stable.getSpec().getReplicas());
+        assertEquals(2, stable.getSpec().getReplicas());
         assertEquals("stable", env(stable, "APP_COLOR"));
-        assertEquals(Map.of("app", APP),
+        assertEquals(Map.of("app", APP, "track", "stable"),
                 client.services().inNamespace(NAMESPACE).withName("lily-svc").get().getSpec().getSelector());
-        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: step canary=1 stable=4")));
-        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: step canary=5 stable=0")));
+        assertNull(client.network().v1().ingresses().inNamespace(NAMESPACE).withName("lily-canary-ingress").get());
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: weight=0 stable=2 canary=2")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: weight=20 stable=2 canary=2")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: weight=100 stable=2 canary=2")));
         assertTrue(result.logs().stream().anyMatch(line -> line.contains("promoted")));
         assertTrue(result.logs().stream().anyMatch(line -> line.contains("stable serves the new image")));
     }
 
     @Test
-    void 가중치가_1퍼센트여도_시작_파드는_1개다() {
+    void 가중치_1퍼센트는_0에서_1칸씩_100까지_올린다() {
         startReadyMarker();
         engine(8, 1).deploy(APP, IMAGE, 8080).join();
         DeploymentResultDto result = engine(8, 1).deploy(APP, IMAGE_V2, 8080).join();
 
-        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: step canary=1 stable=4")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: weight=0 ")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: weight=1 ")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: weight=100 ")));
         assertNull(deployment("lily-canary"));
-        assertEquals(CanaryDeploymentStrategy.TOTAL_REPLICAS, deployment("lily-stable").getSpec().getReplicas());
+        assertEquals(2, deployment("lily-stable").getSpec().getReplicas());
         assertEquals(IMAGE_V2, deployment("lily-stable").getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
     }
 
     @Test
-    void 가중치_40퍼센트는_canary_2개에서_시작한다() {
+    void 가중치_40퍼센트는_40칸으로_100까지_올린다() {
         startReadyMarker();
         engine(8, 40).deploy(APP, IMAGE, 8080).join();
         DeploymentResultDto result = engine(8, 40).deploy(APP, IMAGE_V2, 8080).join();
 
-        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: step canary=2 stable=3")));
-        assertTrue(result.logs().stream().noneMatch(line -> line.contains("canary: step canary=1 stable=4")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: weight=40 ")));
+        assertTrue(result.logs().stream().anyMatch(line -> line.contains("canary: weight=80 ")));
+        assertTrue(result.logs().stream().noneMatch(line -> line.contains("canary: weight=20 ")));
         assertNull(deployment("lily-canary"));
+        assertEquals(2, deployment("lily-stable").getSpec().getReplicas());
         assertEquals(IMAGE_V2, deployment("lily-stable").getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
     }
 
@@ -159,10 +164,11 @@ class CanaryDeploymentStrategyTest {
 
         assertTrue(error.getLogs().stream().anyMatch(line -> line.contains("active service was not modified")));
         assertNull(deployment("lily-canary"));
-        assertEquals(CanaryDeploymentStrategy.TOTAL_REPLICAS, deployment("lily-stable").getSpec().getReplicas());
+        assertEquals(2, deployment("lily-stable").getSpec().getReplicas());
         assertEquals(IMAGE, deployment("lily-stable").getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
-        assertEquals(Map.of("app", APP),
+        assertEquals(Map.of("app", APP, "track", "stable"),
                 client.services().inNamespace(NAMESPACE).withName("lily-svc").get().getSpec().getSelector());
+        assertNull(client.network().v1().ingresses().inNamespace(NAMESPACE).withName("lily-canary-ingress").get());
     }
 
     @Test
@@ -219,6 +225,7 @@ class CanaryDeploymentStrategyTest {
         DeployProperties properties = new DeployProperties();
         properties.setReadinessTimeoutSeconds(timeoutSeconds);
         properties.setCanaryWeightPercent(weightPercent);
+        properties.setCanaryStepSeconds(0);
         properties.setStrategy("canary");
         return new DeploymentEngine(
                 properties,
