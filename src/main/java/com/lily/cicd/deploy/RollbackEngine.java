@@ -117,7 +117,8 @@ public class RollbackEngine {
         DeployContext context = new DeployContext(appName, ns, null, 0, DeploymentEngine.SERVICE_PORT, host,
                 "rollback", null, DeploymentEngine.serviceName(appName), DeploymentEngine.METRICS_PATH, null);
 
-        try (DeployLock.Handle ignored = deployLock.acquire(ns, appName, "rollback")) {
+        try (DeployLock.Handle lock = deployLock.acquire(ns, appName, "rollback")) {
+            try (DeployLock.Beat beat = lock.heartbeat()) {
             recorder.record(context, logs, DeployStages.STARTED,
                     "rollback started strategy=" + strategy.name() + " appOnly=" + appOnly);
             SlotPlan plan = strategy.planRollback(ns, appName, logs);
@@ -167,6 +168,7 @@ public class RollbackEngine {
             recorder.record(context, logs, DeployStages.SUCCEEDED,
                     "rollback complete. active=" + plan.target() + " status=" + status);
             return new DeploymentResultDto(status, plan.target(), "http://" + host, schemaVersion, List.copyOf(logs));
+            }
         } catch (RuntimeException e) {
             recorder.failed(context, logs, e);
             throw e;

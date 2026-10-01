@@ -126,6 +126,20 @@ class ReleaseStoreAndLockTest {
     }
 
     @Test
+    void 잠금을_갱신하면_시각이_앞으로_간다() {
+        DeployLock.Handle handle = new DeployLock(client).acquire(NS, "blog", "deploy");
+        ZonedDateTime stale = ZonedDateTime.now(ZoneOffset.UTC).minusMinutes(10);
+        client.leases().inNamespace(NS).withName("lily-lock-blog").edit(l -> new LeaseBuilder(l)
+                .editSpec().withRenewTime(stale).endSpec().build());
+
+        handle.renew();
+
+        assertTrue(client.leases().inNamespace(NS).withName("lily-lock-blog").get()
+                .getSpec().getRenewTime().toInstant().isAfter(stale.toInstant()));
+        handle.close();
+    }
+
+    @Test
     void 남이_가져간_잠금은_닫아도_지우지_않는다() {
         DeployLock lock = new DeployLock(client);
         DeployLock.Handle mine = lock.acquire(NS, "blog", "deploy");

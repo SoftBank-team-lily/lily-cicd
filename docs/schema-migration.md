@@ -65,7 +65,7 @@ lily-cicd 는 worker 에서 돌고, RDS 보안 그룹은 worker 를 이미 허�
 | | `lily.io/schema-version` | 이 릴리스가 끝났을 때의 스키마 버전. 플랫폼이 마이그레이션을 맡은 앱만 |
 | | `lily.io/database` | `postgres` / `mysql` |
 | ConfigMap `{app}-{slot}-schema` | 파일명 | 이 릴리스 커밋의 V/U 전체. 롤백할 때 필요한 U 는 **현재** 릴리스에만 있다 |
-| Lease `lily-lock-{app}` | holder | 배포·롤백 직렬화. 15분 지나면 만료로 보고 가져간다 |
+| Lease `lily-lock-{app}` | holder | 배포·롤백 직렬화. 잡은 쪽이 5초마다 갱신하고, 갱신이 45초 멈추면 만료로 보고 가져간다 |
 
 ## 4. 롤백
 

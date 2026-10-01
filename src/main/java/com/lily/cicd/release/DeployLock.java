@@ -12,15 +12,17 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 같은 앱의 배포와 롤백을 한 번에 하나만 돌린다. Lease {@code lily-lock-{app}} 을 만든 쪽이 잡는다.
  *
- * <p>lily-cicd 가 배포 도중 죽으면 Lease 가 남는다. {@link #EXPIRY} 가 지나면 만료로 보고 가져간다.
+ * <p>잡은 쪽은 몇 초마다 갱신한다. 프로세스가 죽으면 갱신이 멈추고 {@link #EXPIRY} 가 지나면 만료로 보고 가져간다.
  */
 public class DeployLock {
 
-    static final Duration EXPIRY = Duration.ofMinutes(15);
+    /** 맥박(5초)이 끊긴 뒤 다음 작업이 잠금을 가져가기까지 */
+    static final Duration EXPIRY = Duration.ofSeconds(45);
     private static final Logger log = LoggerFactory.getLogger(DeployLock.class);
 
     private final KubernetesClient k8s;
@@ -83,6 +85,13 @@ public class DeployLock {
         return renew == null || renew.toInstant().plus(EXPIRY).isBefore(Instant.now());
     }
 
+    /** close 가 검사 예외를 던지지 않는다. try-with-resources 에 그대로 쓴다 */
+    @FunctionalInterface
+    public interface Beat extends AutoCloseable {
+        @Override
+        void close();
+    }
+
     /** try-with-resources 로 쓴다. 닫을 때 내가 잡은 Lease 만 지운다 */
     public final class Handle implements AutoCloseable {
         private final String namespace;
@@ -93,6 +102,43 @@ public class DeployLock {
             this.namespace = namespace;
             this.name = name;
             this.holder = holder;
+        }
+
+        /** 배포·롤백이 도는 동안 renewTime 을 당긴다. 프로세스가 죽으면 이 스레드도 죽는다 */
+        public Beat heartbeat() {
+            AtomicBoolean stopped = new AtomicBoolean();
+            Thread thread = Thread.ofVirtual().name("lock-" + name).start(() -> {
+                while (!stopped.get()) {
+                    try {
+                        Thread.sleep(5_000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    if (!stopped.get()) {
+                        renew();
+                    }
+                }
+            });
+            return () -> {
+                stopped.set(true);
+                thread.interrupt();
+            };
+        }
+
+        void renew() {
+            try {
+                Lease current = k8s.leases().inNamespace(namespace).withName(name).get();
+                if (current == null || current.getSpec() == null
+                        || !holder.equals(current.getSpec().getHolderIdentity())) {
+                    log.warn("lock lost. name={} holder={}", name, holder);
+                    return;
+                }
+                current.getSpec().setRenewTime(ZonedDateTime.now(ZoneOffset.UTC));
+                k8s.leases().inNamespace(namespace).resource(current).update();
+            } catch (KubernetesClientException e) {
+                log.warn("lock renew failed. name={} message={}", name, e.getMessage());
+            }
         }
 
         @Override

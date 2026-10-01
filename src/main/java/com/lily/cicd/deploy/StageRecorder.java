@@ -4,6 +4,7 @@ import com.lily.cicd.module.DeployContext;
 import com.lily.cicd.module.DeployLog;
 import com.lily.cicd.module.DeployMonitor;
 import com.lily.cicd.module.DeployStages;
+import com.lily.cicd.release.DeployLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,7 +38,7 @@ class StageRecorder {
             logs.add(detail);
         }
         if (progress != null) {
-            progress.update(context.namespace(), context.appName(), stage, detail);
+            progress.update(context.namespace(), context.appName(), stage, detail, context.imageUrl());
         }
         try {
             deployLog.record(context, stage, detail);
@@ -49,7 +50,7 @@ class StageRecorder {
     void failed(DeployContext context, List<String> logs, RuntimeException error) {
         String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
         if (progress != null) {
-            progress.update(context.namespace(), context.appName(), DeployStages.FAILED, message);
+            progress.update(context.namespace(), context.appName(), DeployStages.FAILED, message, context.imageUrl());
         }
         try {
             deployLog.record(context, DeployStages.FAILED, message);
@@ -63,6 +64,14 @@ class StageRecorder {
                     monitorError.getMessage(), monitorError);
         }
         logs.add("failed: " + message);
+    }
+
+    /** 배포가 도는 동안 진행 시각을 갱신한다. progress 가 없으면 아무 것도 하지 않는다 */
+    DeployLock.Beat pulse(String namespace, String appName) {
+        if (progress == null) {
+            return () -> { };
+        }
+        return progress.pulse(namespace, appName);
     }
 
     static String last(List<String> logs) {

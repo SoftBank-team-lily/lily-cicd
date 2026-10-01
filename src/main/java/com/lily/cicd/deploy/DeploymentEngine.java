@@ -145,7 +145,9 @@ public class DeploymentEngine {
                 METRICS_PATH,
                 command.database());
 
-        try (DeployLock.Handle ignored = deployLock.acquire(namespace, appName, "deploy")) {
+        try (DeployLock.Handle lock = deployLock.acquire(namespace, appName, "deploy")) {
+            try (DeployLock.Beat beat = lock.heartbeat();
+                 DeployLock.Beat pulse = recorder.pulse(namespace, appName)) {
             recorder.record(context, logs, DeployStages.STARTED,
                     "deploy started strategy=" + strategy.name() + " image=" + command.imageUrl());
             Map<String, String> databaseEnv = prepareDatabase(context, logs);
@@ -201,10 +203,12 @@ public class DeploymentEngine {
             strategy.retirePrevious(namespace, appName, plan, logs);
             recorder.record(context, logs, DeployStages.SCALE_DOWN, last(logs));
 
+            String url = properties.getUrlScheme() + "://" + host;
             recorder.record(context, logs, DeployStages.SUCCEEDED,
-                    "cutover complete. active=" + plan.target() + " host=" + host);
-            return new DeploymentResultDto("SUCCESS", plan.target(), properties.getUrlScheme() + "://" + host,
+                    "cutover complete. active=" + plan.target() + " host=" + host + " url=" + url);
+            return new DeploymentResultDto("SUCCESS", plan.target(), url,
                     SchemaVersions.format(change.to()), List.copyOf(logs));
+            }
         } catch (RuntimeException e) {
             recorder.failed(context, logs, e);
             throw e;
