@@ -205,13 +205,26 @@ class RollbackEngineTest {
     }
 
     @Test
-    void canary_전략은_롤백을_지원하지_않는다() {
+    void canary_전략은_이전_트랙을_다시_띄운다() {
+        givenCanaryReleases();
+        startReadyMarker();
         DeployProperties properties = new DeployProperties();
+        properties.setReadinessTimeoutSeconds(8);
+        properties.setReplicas(1);
+        properties.setDrainSeconds(0);
         RollbackEngine canary = new RollbackEngine(properties, new CanaryDeploymentStrategy(client, properties),
                 context -> DB_ENV, new Slf4jDeployLog(), new NoopDeployMonitor(), migrator,
                 new ReleaseStore(client), new DeployLock(client));
 
-        assertThrows(UnsupportedOperationException.class, () -> canary.rollback(APP, null, false));
+        DeploymentResultDto result = canary.rollback(APP, null, true).join();
+
+        assertEquals("ROLLED_BACK", result.status());
+        assertEquals("stable", result.activeColor());
+        assertEquals("stable", client.services().inNamespace(NS).withName("lily-svc").get()
+                .getSpec().getSelector().get("track"));
+        assertEquals(1, deployment("lily-stable").getSpec().getReplicas());
+        assertEquals(0, deployment("lily-canary").getSpec().getReplicas());
+        assertEquals("image:stable", deployment("lily-stable").getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
     }
 
     @Test
@@ -254,6 +267,38 @@ class RollbackEngineTest {
         givenDeployment("blue", 0, blueDeployedAt, "2");
         givenDeployment("green", 1, greenDeployedAt, "3");
         new ReleaseStore(client).saveScripts(NS, APP, "green", MigrationSet.parse(greenScripts));
+    }
+
+    private void givenCanaryReleases() {
+        client.services().inNamespace(NS).resource(new ServiceBuilder()
+                .withNewMetadata().withName("lily-svc").withNamespace(NS).endMetadata()
+                .withNewSpec()
+                    .withSelector(Map.of("app", APP, "track", "canary"))
+                    .addNewPort().withPort(80).withTargetPort(new IntOrString(8080)).endPort()
+                .endSpec()
+                .build()).create();
+        givenTrack("stable", 0, "2026-09-30T09:00:00Z");
+        givenTrack("canary", 1, "2026-09-30T10:00:00Z");
+    }
+
+    private void givenTrack(String track, int replicas, String deployedAt) {
+        client.apps().deployments().inNamespace(NS).resource(new DeploymentBuilder()
+                .withNewMetadata()
+                    .withName(APP + "-" + track)
+                    .withNamespace(NS)
+                    .addToLabels("app", APP)
+                    .addToLabels("track", track)
+                    .addToAnnotations(ReleaseStore.DEPLOYED_AT, deployedAt)
+                .endMetadata()
+                .withNewSpec()
+                    .withReplicas(replicas)
+                    .withNewSelector().addToMatchLabels("app", APP).addToMatchLabels("track", track).endSelector()
+                    .withNewTemplate()
+                        .withNewMetadata().addToLabels("app", APP).addToLabels("track", track).endMetadata()
+                        .withNewSpec().addNewContainer().withName(APP).withImage("image:" + track).endContainer().endSpec()
+                    .endTemplate()
+                .endSpec()
+                .build()).create();
     }
 
     private void givenService(String color) {

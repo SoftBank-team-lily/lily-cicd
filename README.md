@@ -42,7 +42,7 @@ DeploymentEngine
   → DeploymentStrategy.plan
   → DeploymentStrategy.applyTarget
   → DeploymentStrategy.awaitReady
-  → Canary 판정 (블루그린, 이전 색이 떠 있을 때)
+  → Canary 판정 (블루그린과 카나리, 이전 슬롯이 떠 있을 때)
   → DeploymentStrategy.switchTraffic
   → Router / Monitoring
   → DeploymentStrategy.retirePrevious
@@ -59,11 +59,12 @@ DeploymentEngine
 `lily.deploy.strategy`를 `canary`로 두면 이 전략이 동작합니다. `lily.deploy.canary-weight-percent`는 입구 비율을 올리는 칸이고 기본값은 20이며, 허용 범위는 1 이상 50 이하입니다. 한 칸은 `lily.deploy.canary-step-seconds`(기본 30초) 동안 유지합니다.
 
 * 첫 배포는 `stable` 슬롯에 `lily.deploy.replicas`(기본 2)개를 만들고 트래픽 전부를 그 슬롯으로 보냅니다. `canary` 슬롯은 만들지 않습니다.
-* 다음 배포는 새 이미지를 `canary`에 같은 replica 수로 올립니다. `stable` replica 는 줄이지 않습니다.
-* 본 Service 는 `track=stable` 만 봅니다. 사용자 비율은 `{app}-canary-ingress` 의 `canary-weight` 로 나눕니다. 0 에서 칸만큼 올려 100 이 됩니다.
-* 100 이 되면 그 이미지를 `stable` 로 옮기고 canary Ingress 와 `canary` 슬롯을 지웁니다. 다음 배포는 이 이미지를 기준으로 다시 비율을 올립니다.
-* Ready 전에 실패하면 그 Deployment 만 삭제하고, `stable` 과 Service 는 유지합니다.
-* 비율을 올리다 실패하면 canary Ingress 와 `canary` 를 지웁니다. 사용자 트래픽은 이전 이미지에 남습니다.
+* 다음 배포는 새 이미지를 쉬는 슬롯에 같은 replica 수로 올립니다. 비율을 올리기 전에 블루그린과 같은 에러율·p95 판정을 합니다. 사용자 트래픽은 이전 슬롯에 있습니다. 실패하면 새 Deployment 를 지우고 스키마를 되돌리며 `422 ROLLED_BACK` 입니다.
+* 판정을 통과하면 본 Service 는 이전 슬롯만 보고, 사용자 비율은 `{app}-canary-ingress` 의 `canary-weight` 로 나눕니다. 0 에서 칸만큼 올려 100 이 됩니다.
+* 100 이 되면 본 Service 의 `track` 을 새 슬롯으로 옮기고 canary Ingress 를 지웁니다. 이전 슬롯은 replica 0 으로 남겨 롤백이 되살립니다.
+* Ready 전에 실패하면 그 Deployment 만 삭제하고, 이전 슬롯과 Service 는 유지합니다.
+* 비율을 올리다 실패하면 canary Ingress 와 새 슬롯을 지웁니다. 사용자 트래픽은 이전 이미지에 남습니다.
+* 롤백은 `POST /api/deployments/{app}/rollback` 입니다. replica 0 인 이전 슬롯을 다시 띄우고 selector 를 그 트랙으로 옮긴 뒤, 방금 슬롯을 0 으로 내립니다. 스키마 U 가 있으면 함께 되돌립니다.
 
 `APP_COLOR`에는 슬롯 이름인 `stable` 또는 `canary`가 들어갑니다.
 

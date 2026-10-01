@@ -228,11 +228,13 @@ public class DeploymentEngine {
     }
 
     /**
-     * 블루그린 전환 전 canary 판정. 판정 경로는 요청의 canaryPath, 없으면 readiness 경로다.
+     * 트래픽을 옮기기 전 에러율·p95 판정. 블루그린과 카나리 모두 한다.
+     * 카나리는 사용자 비율을 올리기 전에 하고, 그동안 사용자 트래픽은 이전 슬롯에 남는다.
+     * 판정 경로는 요청의 canaryPath, 없으면 readiness 경로다.
      * 첫 배포처럼 비교할 이전 버전이 없으면 건너뛴다.
      */
     private CanaryAnalysis.Verdict judge(DeployContext context, DeployCommand command, SlotPlan plan, List<String> logs) {
-        if (canary == null || !"blue-green".equals(strategy.name())) {
+        if (canary == null || !("blue-green".equals(strategy.name()) || "canary".equals(strategy.name()))) {
             return new CanaryAnalysis.Verdict("SKIPPED", "not enabled for " + strategy.name(), null);
         }
         String path = firstNonBlank(command.canaryPath(),

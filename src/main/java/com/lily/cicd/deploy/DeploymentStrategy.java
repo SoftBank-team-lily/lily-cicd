@@ -53,7 +53,7 @@ public interface DeploymentStrategy {
     }
 
     /**
-     * 배포가 끝난 뒤 트래픽을 받는 슬롯. 카나리는 비율을 100%까지 올린 다음 그 이미지를 stable 로 남긴다.
+     * 배포가 끝난 뒤 트래픽을 받는 슬롯.
      */
     default String finalSlot(SlotPlan plan) {
         return plan.target();

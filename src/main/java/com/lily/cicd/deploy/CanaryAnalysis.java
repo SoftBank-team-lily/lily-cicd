@@ -202,7 +202,7 @@ public class CanaryAnalysis {
                 .endMetadata()
                 .withNewSpec()
                     .withType("ClusterIP")
-                    .withSelector(Map.of("app", app, "color", plan.target()))
+                    .withSelector(slotSelector(namespace, app, plan.target()))
                     .addNewPort()
                         .withName("http")
                         .withPort(SERVICE_PORT)
@@ -271,8 +271,22 @@ public class CanaryAnalysis {
         return null;
     }
 
-    private List<Pod> pods(String namespace, String app, String color) {
-        return k8sClient.pods().inNamespace(namespace).withLabels(Map.of("app", app, "color", color)).list().getItems();
+    private List<Pod> pods(String namespace, String app, String slot) {
+        return k8sClient.pods().inNamespace(namespace).withLabels(slotSelector(namespace, app, slot)).list().getItems();
+    }
+
+    /** 블루그린은 {@code color}, 카나리는 {@code track}. Deployment 가 쓰는 키를 그대로 고른다. */
+    private Map<String, String> slotSelector(String namespace, String app, String slot) {
+        String key = "color";
+        Deployment deployment = k8sClient.apps().deployments().inNamespace(namespace)
+                .withName(app + "-" + slot).get();
+        if (deployment != null && deployment.getSpec() != null
+                && deployment.getSpec().getSelector() != null
+                && deployment.getSpec().getSelector().getMatchLabels() != null
+                && deployment.getSpec().getSelector().getMatchLabels().containsKey("track")) {
+            key = "track";
+        }
+        return Map.of("app", app, key, slot);
     }
 
     private String url(String service, String namespace, String path) {

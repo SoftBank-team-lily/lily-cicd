@@ -83,7 +83,7 @@
 | `min-p95-regression-millis` | `100` |
 | `min-samples` | `20` |
 
-`lily.deploy.strategy=canary`(입구 비율을 0에서 100까지 올리는 전략)에서는 이 30초 판정을 하지 않는다. 비율을 올리다 실패하면 canary Ingress 를 지우고 이전 stable 로 되돌린다.
+`lily.deploy.strategy=canary` 도 비율을 올리기 전에 이 30초 판정을 한다. 그동안 사용자 트래픽은 이전 트랙에 남고, 판정은 새 슬롯 Service 와 본 Service 를 클러스터 안에서 비교한다. 실패하면 새 Deployment 를 지우고 비율은 올리지 않는다. 통과한 뒤에 입구 비율을 0에서 100까지 올린다.
 
 ## 확인 (2026-10-01, 실제 k3s, lily-builder 로 lily-blog-sample 배포)
 

@@ -71,7 +71,7 @@ lily-cicd 는 worker 에서 돌고, RDS 보안 그룹은 worker 를 이미 허�
 
 ## 4. 롤백
 
-`POST /api/deployments/{appName}/rollback` `{"namespace": null, "appOnly": false}` — blue-green 만 지원한다. 범위는 직전 릴리스(N-1) 한 단계다.
+`POST /api/deployments/{appName}/rollback` `{"namespace": null, "appOnly": false}` — blue-green 과 canary 가 지원한다. 범위는 직전 릴리스(N-1) 한 단계다.
 
 **사전 검사** (하나라도 실패하면 409, 아무것도 바꾸지 않는다)
 - 이전 슬롯 Deployment 가 있고 `deployed-at` 이 현재 슬롯보다 과거 (이미 롤백한 상태에서 다시 롤백하면 앞으로 가게 되므로 거부)
@@ -105,4 +105,4 @@ history 행을 지웠으므로 고친 V 를 같은 버전 번호로 다시 배�
 - 롤백은 N-1 한 단계. 더 이전은 예전 이미지 재배포로 한다
 - 배포가 Ready 전에 실패하면 기존 동작대로 target 슬롯 Deployment 를 지운다. target 은 직전 릴리스가 있던 슬롯이라, 실패한 배포 뒤에는 롤백할 이전 슬롯이 없다 (스키마는 자동으로 되돌린다)
 - MySQL 은 dry-run 과 백업이 없고, U 가 중간에 실패하면 일부만 되돌아간다
-- canary 전략의 롤백은 아직 없다 (promote 단계부터 필요)
+- canary 전략도 롤백한다. 100% 이후 이전 트랙을 replica 0 으로 남기고, 롤백은 그 Deployment 를 다시 띄운 뒤 본 Service 의 track 을 되돌린다
