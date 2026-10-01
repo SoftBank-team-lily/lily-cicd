@@ -131,6 +131,10 @@ public class DeploymentEngine {
         if (!scripts.isEmpty() && isBlank(command.database())) {
             throw new IllegalArgumentException("migrations 는 database 와 함께 보내야 한다");
         }
+        boolean givenDatabase = command.databaseEnv() != null && !command.databaseEnv().isEmpty();
+        if (givenDatabase && !isBlank(command.database())) {
+            throw new IllegalArgumentException("databaseEnv 는 database 와 같이 보낼 수 없다");
+        }
         List<String> logs = new ArrayList<>();
         String namespace = firstNonBlank(command.namespace(), properties.getNamespace());
         String appName = command.appName();
@@ -154,7 +158,9 @@ public class DeploymentEngine {
                  DeployLock.Beat pulse = recorder.pulse(namespace, appName)) {
             recorder.record(context, logs, DeployStages.STARTED,
                     "deploy started strategy=" + strategy.name() + " image=" + command.imageUrl());
-            Map<String, String> databaseEnv = prepareDatabase(context, logs);
+            Map<String, String> databaseEnv = givenDatabase
+                    ? givenDatabase(context, command.databaseEnv(), logs)
+                    : prepareDatabase(context, logs);
 
             SlotPlan plan = strategy.plan(namespace, appName, logs);
             context = strategy.bind(context, plan);
@@ -258,6 +264,12 @@ public class DeploymentEngine {
         }
     }
 
+    /** 호출자가 준 DB 접속 정보 (온프레미스 DB 를 역방향 터널로 쓰는 대기 배포). 값은 로그에 남기지 않는다 */
+    private Map<String, String> givenDatabase(DeployContext context, Map<String, String> env, List<String> logs) {
+        recorder.record(context, logs, DeployStages.DATABASE, "database: given env keys=" + env.keySet());
+        return env;
+    }
+
     private Map<String, String> prepareDatabase(DeployContext context, List<String> logs) {
         try {
             Map<String, String> env = databaseProvisioner.prepare(context);
@@ -359,7 +371,8 @@ public class DeploymentEngine {
                 command.database(),
                 command.host(),
                 command.migrations(),
-                command.canaryPath());
+                command.canaryPath(),
+                command.databaseEnv());
     }
 
     private void validate(DeployCommand command) {
