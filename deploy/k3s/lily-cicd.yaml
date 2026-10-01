@@ -42,6 +42,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
+  # Ready 실패 진단: 죽기 직전 컨테이너 로그와 Warning 이벤트 (PodDiagnostics)
+  - apiGroups: [""]
+    resources: ["pods/log", "events"]
+    verbs: ["get", "list"]
   # 슬롯별 마이그레이션 스크립트 보관 ({app}-{slot}-schema). docs/schema-migration.md
   # list: 죽은 배포의 진행 기록·복구 기록과 남은 canary 를 찾는다
   - apiGroups: [""]
