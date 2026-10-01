@@ -26,7 +26,7 @@
 
 | 규칙 | 이유 |
 |---|---|
-| V 마다 U 가 있거나 `lily:irreversible` | 롤백 가능성을 배포 시점에 보장 |
+| V 마다 U 가 있거나 `lily:irreversible` (첫 릴리스는 제외) | 롤백 가능성을 배포 시점에 보장. 첫 릴리스는 되돌아갈 이전 릴리스가 없고, 그 V 는 이후 롤백 범위에 들어가지 않는다. 첫 릴리스가 Ready 전에 실패하면 U 가 없는 스키마는 남는다 |
 | `RENAME`, 컬럼 타입 변경(`ALTER COLUMN .. TYPE`, `MODIFY`, `CHANGE`) 금지 | 전환 전까지 이전 슬롯이 새 스키마 위에서 돈다. 이전 코드의 쿼리가 깨진다 |
 | `ADD COLUMN .. NOT NULL` 은 `DEFAULT` 필수, `SET NOT NULL` 금지 | 이전 슬롯의 INSERT 가 깨진다 |
 | `DROP TABLE/COLUMN`, `TRUNCATE` 는 `lily:irreversible` 에서만 | 데이터가 사라져 U 로 복구할 수 없다 |
