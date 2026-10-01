@@ -1,6 +1,8 @@
 package com.lily.cicd.deploy;
 
 import com.lily.cicd.config.DeployProperties;
+import com.lily.cicd.release.DeployConflictException;
+import com.lily.cicd.release.DeployLock;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
 import io.fabric8.kubernetes.client.KubernetesClient;
@@ -10,15 +12,17 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 /**
- * 배포된 앱의 활성 슬롯(blue-green) 상태 조회와 레플리카 조정.
+ * 배포된 앱의 활성 슬롯(blue-green) 상태 조회와 레플리카 조정, 중지·다시 시작·삭제.
  * 클라우드 버스팅에서 대기 슬롯을 0 으로 두었다가 부하가 오면 올리는 데 쓴다.
- * 새 배포를 하면 슬롯 레플리카는 다시 기본값으로 돌아간다.
+ * 새 배포를 하면 슬롯 레플리카는 다시 기본값으로 돌아간다 (중지한 앱도 다시 배포하면 뜬다).
  */
 @RestController
 @RequestMapping("/api/apps")
@@ -30,21 +34,25 @@ public class AppController {
 
     private final KubernetesClient k8s;
     private final DeployProperties properties;
+    private final DeployLock lock;
+    private final AppRemover remover;
 
-    public AppController(KubernetesClient k8s, DeployProperties properties) {
+    public AppController(KubernetesClient k8s, DeployProperties properties, DeployLock lock, AppRemover remover) {
         this.k8s = k8s;
         this.properties = properties;
+        this.lock = lock;
+        this.remover = remover;
     }
 
     @GetMapping("/{appName}")
     public ResponseEntity<AppStatus> status(@PathVariable String appName,
                                             @RequestParam(required = false) String namespace) {
         String ns = namespace(namespace);
-        String color = activeColor(ns, appName);
-        if (color == null) {
+        String slot = activeSlot(ns, appName);
+        if (slot == null) {
             return ResponseEntity.notFound().build();
         }
-        return ResponseEntity.ok(statusOf(ns, appName, color));
+        return ResponseEntity.ok(statusOf(ns, appName, slot));
     }
 
     @PutMapping("/{appName}/replicas")
@@ -62,6 +70,60 @@ public class AppController {
         return ResponseEntity.ok(statusOf(ns, appName, color));
     }
 
+    /**
+     * 앱의 모든 슬롯을 0 으로 줄인다. Service, Ingress, DB, 릴리스 기록은 남아서 {@code start} 로 바로 되살린다.
+     * 배포·롤백 중이면 409.
+     */
+    @PostMapping("/{appName}/stop")
+    public ResponseEntity<AppStatus> stop(@PathVariable String appName,
+                                          @RequestParam(required = false) String namespace) {
+        String ns = namespace(namespace);
+        String slot = activeSlot(ns, appName);
+        if (slot == null) {
+            return ResponseEntity.notFound().build();
+        }
+        try (DeployLock.Handle ignored = lock.acquire(ns, appName, "stop")) {
+            List<Deployment> slots = k8s.apps().deployments().inNamespace(ns).withLabel("app", appName).list().getItems();
+            for (Deployment d : slots) {
+                k8s.apps().deployments().inNamespace(ns).withName(d.getMetadata().getName()).scale(0);
+            }
+            log.info("stopped app={} slots={}", appName, slots.size());
+        }
+        return ResponseEntity.ok(statusOf(ns, appName, slot));
+    }
+
+    /** 트래픽을 받는 슬롯을 기본 레플리카(lily.deploy.replicas)로 되돌린다. 배포·롤백 중이면 409 */
+    @PostMapping("/{appName}/start")
+    public ResponseEntity<AppStatus> start(@PathVariable String appName,
+                                           @RequestParam(required = false) String namespace) {
+        String ns = namespace(namespace);
+        String slot = activeSlot(ns, appName);
+        if (slot == null) {
+            return ResponseEntity.notFound().build();
+        }
+        int replicas = Math.max(1, Math.min(MAX_REPLICAS, properties.getReplicas()));
+        try (DeployLock.Handle ignored = lock.acquire(ns, appName, "start")) {
+            k8s.apps().deployments().inNamespace(ns).withName(appName + "-" + slot).scale(replicas);
+            log.info("started app={} slot={} replicas={}", appName, slot, replicas);
+        }
+        return ResponseEntity.ok(statusOf(ns, appName, slot));
+    }
+
+    /**
+     * 앱을 클러스터에서 지운다. {@code database=true} 면 DB 도 DROP 한다 (되돌릴 수 없다).
+     * 아무것도 없으면 404, 배포·롤백 중이면 409.
+     */
+    @DeleteMapping("/{appName}")
+    public ResponseEntity<AppRemover.Removal> delete(@PathVariable String appName,
+                                                     @RequestParam(required = false) String namespace,
+                                                     @RequestParam(defaultValue = "false") boolean database) {
+        AppRemover.Removal removal = remover.remove(namespace(namespace), appName, database);
+        if (removal.nothing()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(removal);
+        }
+        return ResponseEntity.ok(removal);
+    }
+
     /** blue-green 의 Service selector 에 있는 color. Service 가 없거나 color 가 없으면 null */
     private String activeColor(String ns, String appName) {
         Service service = k8s.services().inNamespace(ns).withName(appName + "-svc").get();
@@ -69,6 +131,15 @@ public class AppController {
             return null;
         }
         return service.getSpec().getSelector().get("color");
+    }
+
+    /** 트래픽을 받는 슬롯. blue-green 은 Service 의 color, canary 전략은 stable. 앱이 없으면 null */
+    private String activeSlot(String ns, String appName) {
+        String color = activeColor(ns, appName);
+        if (color != null) {
+            return color;
+        }
+        return k8s.apps().deployments().inNamespace(ns).withName(appName + "-stable").get() == null ? null : "stable";
     }
 
     private AppStatus statusOf(String ns, String appName, String color) {
@@ -92,5 +163,11 @@ public class AppController {
     @ExceptionHandler(IllegalArgumentException.class)
     ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException e) {
         return ResponseEntity.badRequest().body(Map.of("message", String.valueOf(e.getMessage())));
+    }
+
+    @ExceptionHandler(DeployConflictException.class)
+    ResponseEntity<Map<String, String>> conflict(DeployConflictException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of("status", "REJECTED", "message", String.valueOf(e.getMessage())));
     }
 }
