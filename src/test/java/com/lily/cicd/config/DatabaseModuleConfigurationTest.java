@@ -1,5 +1,6 @@
 package com.lily.cicd.config;
 
+import com.lily.cicd.deploy.DeployProgress;
 import com.lily.cicd.module.DatabaseProvisioner;
 import com.lily.cicd.module.HttpDatabaseProvisioner;
 import com.lily.cicd.module.NoopDatabaseProvisioner;
@@ -16,6 +17,8 @@ class DatabaseModuleConfigurationTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withBean(KubernetesClient.class, () -> mock(KubernetesClient.class))
             .withBean(DeployProperties.class)
+            // 컴포넌트 스캔으로 들어오는 빈. ModuleConfiguration 의 AppRemover·DeployRecovery 가 받는다
+            .withBean(DeployProgress.class, DeployProgress::new)
             .withUserConfiguration(ModuleConfiguration.class, DatabaseModuleConfiguration.class);
 
     @Test
