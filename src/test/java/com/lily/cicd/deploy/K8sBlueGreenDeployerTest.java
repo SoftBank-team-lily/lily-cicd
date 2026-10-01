@@ -15,6 +15,7 @@ import com.lily.cicd.release.ReleaseStore;
 import com.lily.cicd.schema.SchemaMigrator;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.IntOrString;
+import io.fabric8.kubernetes.api.model.PodBuilder;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServiceBuilder;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
@@ -167,6 +168,36 @@ class K8sBlueGreenDeployerTest {
         assertEquals("blue", serviceColor());
         assertNull(deployment("lily-green"));
         assertEquals(1, deployment("lily-blue").getSpec().getReplicas());
+    }
+
+    @Test
+    void readiness가_실패하면_지우기_전에_pod_상태를_남긴다() {
+        givenService("blue");
+        givenDeployment("blue", 1);
+        client.pods().inNamespace(NAMESPACE).resource(new PodBuilder()
+                .withNewMetadata()
+                    .withName("lily-green-abc")
+                    .addToLabels("app", APP)
+                    .addToLabels("color", "green")
+                .endMetadata()
+                .withNewStatus()
+                    .addNewContainerStatus()
+                        .withName(APP)
+                        .withRestartCount(3)
+                        .withNewState().withNewWaiting().withReason("CrashLoopBackOff").endWaiting().endState()
+                        .withNewLastState().withNewTerminated().withExitCode(1).withReason("Error").endTerminated()
+                        .endLastState()
+                    .endContainerStatus()
+                .endStatus()
+                .build()).create();
+
+        DeploymentFailedException error = assertThrows(DeploymentFailedException.class,
+                () -> deployer(1).deploy(APP, IMAGE, 8080).join());
+
+        assertTrue(error.getLogs().stream().anyMatch(line ->
+                line.equals("diagnosis: container lily restarts=3 waiting=CrashLoopBackOff lastExit=1 Error")),
+                String.join(" | ", error.getLogs()));
+        assertNull(deployment("lily-green"));
     }
 
     @Test
