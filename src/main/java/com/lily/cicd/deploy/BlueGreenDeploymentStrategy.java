@@ -5,7 +5,6 @@ import com.lily.cicd.release.DeployConflictException;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
 import io.fabric8.kubernetes.api.model.IntOrString;
-import io.fabric8.kubernetes.api.model.ProbeBuilder;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServiceBuilder;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
@@ -281,9 +280,9 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
                                     .withContainerPort(command.targetPort())
                                 .endPort()
                                 .withEnv(containerEnv(name, plain, secretEnv))
-                                .withReadinessProbe(httpProbe(readinessPath, command.targetPort()))
-                                .withLivenessProbe(httpProbe(livenessPath, command.targetPort()))
-                                .withStartupProbe(startupProbe(livenessPath, command.targetPort()))
+                                .withReadinessProbe(Probes.check(readinessPath, command.targetPort()))
+                                .withLivenessProbe(Probes.check(livenessPath, command.targetPort()))
+                                .withStartupProbe(Probes.startup(livenessPath, command.targetPort()))
                             .endContainer()
                         .endSpec()
                     .endTemplate()
@@ -331,34 +330,6 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
                 target.put(key, value);
             }
         });
-    }
-
-    /**
-     * 기동이 끝날 때까지 liveness 를 미룬다. Spring Boot 앱은 t3.medium 에서 기동에 10~20초가 걸려서,
-     * liveness(5초 후 3초 간격, 3회 실패)만 있으면 뜨기 전에 재시작을 반복한다. 최대 3분(5초 x 36회) 기다린다.
-     */
-    private io.fabric8.kubernetes.api.model.Probe startupProbe(String path, int port) {
-        return new ProbeBuilder()
-                .withNewHttpGet()
-                    .withPath(path)
-                    .withPort(new IntOrString(port))
-                    .withScheme("HTTP")
-                .endHttpGet()
-                .withPeriodSeconds(5)
-                .withFailureThreshold(36)
-                .build();
-    }
-
-    private io.fabric8.kubernetes.api.model.Probe httpProbe(String path, int port) {
-        return new ProbeBuilder()
-                .withNewHttpGet()
-                    .withPath(path)
-                    .withPort(new IntOrString(port))
-                    .withScheme("HTTP")
-                .endHttpGet()
-                .withInitialDelaySeconds(5)
-                .withPeriodSeconds(3)
-                .build();
     }
 
     /** canary 판정에서 떨어진 새 슬롯을 지운다. Service selector 는 바꾸지 않았으므로 트래픽은 이전 색 그대로다 */

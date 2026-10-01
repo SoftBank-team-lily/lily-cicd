@@ -221,6 +221,10 @@ public class DeploymentEngine {
         }
         String path = firstNonBlank(command.canaryPath(),
                 firstNonBlank(command.readinessPath(), properties.getReadinessPath()));
+        if (Probes.isTcp(path)) {
+            // 헬스 경로가 없는 앱. canary 는 5xx 만 실패로 세므로 / 의 401·404 는 괜찮다
+            path = "/";
+        }
         try {
             return canary.judge(context, path, plan, (stage, line) -> recorder.record(context, logs, stage, line));
         } catch (KubernetesClientException e) {
