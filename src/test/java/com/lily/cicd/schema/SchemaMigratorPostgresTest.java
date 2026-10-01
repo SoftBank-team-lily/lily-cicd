@@ -216,6 +216,25 @@ class SchemaMigratorPostgresTest {
                 count("select count(*) from pg_namespace where nspname like 'lily_bak_%'"));
     }
 
+    @Test
+    void 첫_릴리스는_U_없이_적용하고_다음_릴리스의_새_V_부터_U_를_요구한다() throws SQLException {
+        SchemaChange first = migrator.migrate(env(), set(Map.of("V1__posts.sql", V1)), logs);
+
+        assertEquals(List.of(v("1")), first.applied());
+        assertTrue(logs.contains("schema: dry-run ok (V → U → V, rolled back)"));
+        assertTrue(logs.stream().anyMatch(l -> l.startsWith("schema: first release, U 없이 적용 [V1__posts.sql]")));
+
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () ->
+                migrator.migrate(env(), set(Map.of("V1__posts.sql", V1, "V2__views.sql", V2)), logs));
+        assertTrue(e.getMessage().contains("U2__*.sql 이 없다"));
+        assertFalse(columnExists("view_count"));
+
+        SchemaChange second = migrator.migrate(env(), set(Map.of(
+                "V1__posts.sql", V1, "V2__views.sql", V2, "U2__views.sql", U2)), logs);
+        assertEquals(List.of(v("2")), second.applied());
+        assertTrue(columnExists("view_count"));
+    }
+
     private static MigrationSet set(Map<String, String> files) {
         return MigrationSet.parse(new HashMap<>(files));
     }

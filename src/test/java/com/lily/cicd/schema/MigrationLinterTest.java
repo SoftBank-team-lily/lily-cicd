@@ -82,6 +82,25 @@ class MigrationLinterTest {
     }
 
     @Test
+    void 첫_릴리스는_U_가_없어도_된다() {
+        MigrationSet set = MigrationSet.parse(Map.of(
+                "V1__init.sql", "create table posts(id bigserial primary key, title text not null);",
+                "V2__seed.sql", "insert into posts(title) values ('hello');"));
+
+        assertEquals(List.of(), MigrationLinter.lint(set.pending(Set.of()), set, true));
+    }
+
+    @Test
+    void 첫_릴리스여도_U_외의_규칙은_그대로다() {
+        MigrationSet set = MigrationSet.parse(Map.of("V1__init.sql", "alter table posts rename column a to b;"));
+
+        List<String> violations = MigrationLinter.lint(set.pending(Set.of()), set, true);
+
+        assertEquals(1, violations.size());
+        assertTrue(violations.get(0).contains("이름 변경"));
+    }
+
+    @Test
     void 주석과_문자열을_지우고_문장별로_나눈다() {
         assertEquals(List.of("CREATE TABLE A(ID INT)", "INSERT INTO A VALUES ('')"),
                 MigrationLinter.statements("/* drop table a */ create table a(id int); -- rename\n"

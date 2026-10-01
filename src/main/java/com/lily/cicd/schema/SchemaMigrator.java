@@ -48,12 +48,21 @@ public class SchemaMigrator {
             return new SchemaChange(from, from, List.of());
         }
 
-        List<String> violations = MigrationLinter.lint(pending, scripts);
+        // 첫 릴리스는 되돌아갈 이전 릴리스가 없다. U 를 요구하지 않는다 (MigrationLinter)
+        boolean firstRelease = applied.isEmpty();
+        List<String> violations = MigrationLinter.lint(pending, scripts, firstRelease);
         if (!violations.isEmpty()) {
             violations.forEach(v -> logs.add("schema: lint " + v));
             throw new IllegalArgumentException("마이그레이션 규칙 위반: " + String.join("; ", violations));
         }
         logs.add("schema: lint ok " + names(pending));
+        List<String> withoutUndo = pending.stream()
+                .filter(script -> !script.irreversible() && scripts.undo(script.version()).isEmpty())
+                .map(MigrationScript::fileName)
+                .toList();
+        if (!withoutUndo.isEmpty()) {
+            logs.add("schema: first release, U 없이 적용 " + withoutUndo + " (이 배포가 실패하면 스키마는 남는다)");
+        }
 
         if (db.transactionalDdl()) {
             db.dryRun(dryRunSteps(pending, scripts));
@@ -143,7 +152,10 @@ public class SchemaMigrator {
                 lastIrreversible = i;
             }
         }
-        List<MigrationScript> reversible = pending.subList(lastIrreversible + 1, pending.size());
+        // U 가 없는 V(첫 릴리스)는 되돌리는 단계를 건너뛴다. 이후 릴리스는 lint 가 U 를 보장한다
+        List<MigrationScript> reversible = pending.subList(lastIrreversible + 1, pending.size()).stream()
+                .filter(script -> scripts.undo(script.version()).isPresent())
+                .toList();
         List<MigrationScript> steps = new ArrayList<>(pending);
         steps.addAll(scripts.undoScripts(reversible.stream().map(MigrationScript::version).toList()));
         steps.addAll(reversible);

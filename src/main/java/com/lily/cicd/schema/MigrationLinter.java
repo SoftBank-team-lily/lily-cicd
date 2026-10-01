@@ -12,6 +12,8 @@ import java.util.regex.Pattern;
  * 그래서 이전 코드의 쿼리를 깨는 변경(이름·타입 변경, 기본값 없는 NOT NULL)은 막고,
  * 데이터가 사라지는 변경은 {@code -- lily:irreversible} 로 표시한 V 에서만 허용한다.
  * 롤백 가능성을 배포 시점에 보장하려고 V 마다 U 를 요구한다.
+ * 단 첫 릴리스(적용된 버전이 없음)는 되돌아갈 이전 릴리스가 없어서 U 를 요구하지 않는다.
+ * 첫 릴리스의 V 는 이후 롤백 범위(직전 릴리스 이후 버전)에 들어가지 않으므로 그 U 는 쓰일 일이 없다.
  *
  * <p>SQL 파서가 아니라 주석과 문자열을 걷어낸 뒤 문장 단위로 정규식을 본다.
  */
@@ -34,10 +36,18 @@ public final class MigrationLinter {
 
     /** @return 위반 목록. 비어 있으면 통과 */
     public static List<String> lint(List<MigrationScript> pending, MigrationSet set) {
+        return lint(pending, set, false);
+    }
+
+    /**
+     * @param firstRelease DB 에 적용된 버전이 없다. 이때는 U 가 없어도 된다
+     * @return 위반 목록. 비어 있으면 통과
+     */
+    public static List<String> lint(List<MigrationScript> pending, MigrationSet set, boolean firstRelease) {
         List<String> violations = new ArrayList<>();
         for (MigrationScript script : pending) {
             boolean irreversible = script.irreversible();
-            if (!irreversible && set.undo(script.version()).isEmpty()) {
+            if (!firstRelease && !irreversible && set.undo(script.version()).isEmpty()) {
                 violations.add(script.fileName() + ": U" + script.version() + "__*.sql 이 없다. 되돌릴 수 없는 변경이면 '"
                         + MigrationScript.IRREVERSIBLE_MARKER + "' 를 넣는다");
             }
