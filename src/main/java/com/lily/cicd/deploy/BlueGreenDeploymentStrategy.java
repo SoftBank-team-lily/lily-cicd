@@ -135,6 +135,8 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
         } catch (KubernetesClientException e) {
             log.error("readiness wait failed. namespace={} name={} timeoutSeconds={} code={} message={}",
                     namespace, targetName, timeout, e.getCode(), e.getMessage(), e);
+            // 지우면 Pod 와 로그도 사라진다. 원인을 먼저 남긴다
+            logs.addAll(PodDiagnostics.collect(k8sClient, namespace, targetName));
             deleteTargetQuietly(namespace, targetName, logs);
             logs.add("step3: aborted. active service was not modified");
             throw new DeploymentFailedException(
