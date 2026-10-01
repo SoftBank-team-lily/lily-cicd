@@ -7,7 +7,7 @@
 앱을 다시 배포하면 로드밸런싱 쪽에서 손으로 추가해 둔 접속 주소가 사라지고, 그 주소로는 404 가 나는 문제
 
 - Ingress 는 "이 도메인으로 들어온 요청을 어느 Service 로 보낼지" 적어 둔 목록이다. 앱마다 `{app}-ingress` 가 하나 있다
-- cicd 는 배포 마지막에 `NginxIngressRouter` 가 `{app}-ingress` 를 **호스트 하나짜리로 새로 만들어 통째로 교체(createOrReplace)** 한다. 호스트는 요청의 `host`, 없으면 `{app}.{LILY_DEPLOY_DOMAIN}` (지금 `apps.lilycloud.kr`)
+- 당시 cicd 는 배포 마지막에 `NginxIngressRouter` 가 `{app}-ingress` 를 **호스트 하나짜리로 새로 만들어 통째로 교체(createOrReplace)** 했다. 호스트는 요청의 `host`, 없으면 `{app}.{LILY_DEPLOY_DOMAIN}` (지금 `apps.lilycloud.kr`). 지금은 그 호스트 규칙만 갈아 끼우고, 다른 호스트와 TLS 는 유지한다
 - 그런데 lily-loadbalancer 쪽에서 같은 Ingress 에 호스트를 손으로 추가해 뒀다 (`blog.43.200.152.53.nip.io` 등, `kubectl apply`)
 - 같은 리소스를 cicd(fabric8)와 사람(kubectl)이 같이 고치고 있어서, cicd 가 쓸 때마다 사람이 넣은 내용이 덮이는 구조임을 확인 (managedFields 에 `fabric8-kubernetes-client`, `kubectl-client-side-apply` 둘 다 있음)
 
@@ -51,7 +51,7 @@ cicd 코드 수정이 없고, 리소스마다 주인이 하나라 서로 덮을 
 
 위 재배포 중 두 번째 전환 직후 `/api/posts` 가 502 를 1건 받았다. ingress-nginx 로그를 보면 이전 슬롯 Pod IP 로 보낸 요청이 `upstream timed out` 으로 실패했다.
 cicd 가 Service selector 를 바꾸자마자 이전 슬롯을 0 으로 내리는데, nginx 가 endpoint 목록을 갱신하기 전에 아직 내려가는 Pod 로 요청을 보내서 생기는 것으로 보인다. extra Ingress 와는 무관하고 같은 Service 를 쓰는 모든 주소에 해당한다.
-전환 후 scale down 전에 몇 초 기다리거나, 앱 Pod 에 `preStop` sleep 을 넣는 방법을 따로 검토하자.
+selector 를 바꾼 뒤 `lily.deploy.drain-seconds`(기본 5초) 동안 이전 슬롯을 Ready 로 두고, 같은 시간만큼 Pod `preStop` 에서 `sleep` 한다. 그 다음에 replica 를 0 으로 내린다.
 
 ## 5. 할 일
 
@@ -59,4 +59,4 @@ cicd 가 Service selector 를 바꾸자마자 이전 슬롯을 0 으로 내리�
 * [ ] lily-loadbalancer: blog, blog2, lily-test 의 `nip.io` 호스트를 `{app}-ingress-extra` 로 이동
 * [ ] lily-cicd README 의 Router 모듈 설명에 "`{app}-ingress` 는 cicd 전용" 명시
 * [ ] 적용 후 blog 를 builder 로 다시 배포해서 두 주소 모두 200 인지 확인
-* [ ] 블루그린 전환 순간 502 (4번) 재현·대응
+* [x] 블루그린 전환 순간 502 (4번) — `drain-seconds` 동안 이전 슬롯을 유지하고 Pod `preStop` 에서 같은 시간 대기

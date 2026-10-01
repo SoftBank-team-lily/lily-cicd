@@ -17,6 +17,16 @@ public class DeployProperties {
     private String readinessPath = "/actuator/health/readiness";
     private String livenessPath = "/actuator/health/liveness";
     private long readinessTimeoutSeconds = 120;
+    /**
+     * 블루그린 슬롯의 replica. 2 이상이면 Pod 하나가 죽거나 노드에서 빠져도 남은 Pod 가 받는다.
+     * 2 이상일 때 PodDisruptionBudget(minAvailable 1) 을 같이 둔다.
+     */
+    private int replicas = 2;
+    /**
+     * selector 를 바꾼 뒤 이전 슬롯을 내리기 전에 기다리는 시간(초).
+     * 같은 시간만큼 Pod preStop 에서 sleep 해서, nginx 가 엔드포인트를 갱신하기 전에 프로세스가 죽지 않게 한다.
+     */
+    private int drainSeconds = 5;
     /** {@code blue-green} 또는 {@code canary}. */
     private String strategy = "blue-green";
     /** canary 가 받을 트래픽 비율. 1 이상 50 이하. */
@@ -44,6 +54,12 @@ public class DeployProperties {
     public void setReadinessTimeoutSeconds(long readinessTimeoutSeconds) {
         this.readinessTimeoutSeconds = readinessTimeoutSeconds;
     }
+
+    public int getReplicas() { return replicas; }
+    public void setReplicas(int replicas) { this.replicas = replicas; }
+
+    public int getDrainSeconds() { return drainSeconds; }
+    public void setDrainSeconds(int drainSeconds) { this.drainSeconds = drainSeconds; }
 
     public String getStrategy() { return strategy; }
     public void setStrategy(String strategy) { this.strategy = strategy; }

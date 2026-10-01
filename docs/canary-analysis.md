@@ -1,7 +1,8 @@
 # Canary 판정 (블루그린 전환 전)
 
 블루그린은 새 색이 Ready 가 되면 트래픽을 한 번에 옮긴다. Ready 는 "떴다"만 확인하므로, 떴지만 요청에 5xx 를 내거나
-느린 버전도 그대로 100% 가 된다. 그래서 전환 전에 사용자 트래픽 일부로 새 버전을 판정한다.
+느린 버전도 그대로 100% 가 된다. 그래서 전환 전에 cicd 가 클러스터 안에서 새 버전과 이전 버전을 비교한다.
+사용자 트래픽은 판정이 끝날 때까지 이전 색에 둔다.
 
 ## 순서
 
@@ -9,19 +10,20 @@
 새 색 Ready
   → {app}-canary-svc 를 만들고 첫 응답까지 대기 (최대 15초, 표본에 넣지 않음)
      엔드포인트가 붙기 전에 요청하면 연결이 거절되어 에러로 잡힌다 (실측: 120건 중 3건)
-  → canary-traffic   {app}-canary-ingress (ingress-nginx canary, weight 10%) 로 사용자 요청 10% 를 새 색으로
+  → canary-traffic   사용자 트래픽은 이전 색 그대로. cicd 만 canary Service 로 프로브한다
   → canary-analysis  30초 동안 새 색과 이전 색에 같은 요청을 250ms 간격으로 보내 에러율·p95 측정
                      새 Pod 재시작, Ready 이탈 확인
-  → 통과: Service selector 를 새 색으로 (100%), canary Ingress·Service 삭제, 이전 색 0
-  → 실패: canary Ingress·Service 삭제, 새 Deployment 삭제, 이번 스키마 변경 되돌림. 트래픽은 이전 색 그대로
+  → 통과: Service selector 를 새 색으로 (100%), canary Service 삭제, 드레인 후 이전 색 0
+  → 실패: canary Service 삭제, 새 Deployment 삭제, 이번 스키마 변경 되돌림. 트래픽은 이전 색 그대로
 ```
 
 | 리소스 | 내용 |
 |---|---|
 | `{app}-canary-svc` | selector `app={app}, color={새 색}` |
-| `{app}-canary-ingress` | 같은 호스트, `nginx.ingress.kubernetes.io/canary: "true"`, `canary-weight: "10"` |
+| `{app}-canary-ingress` | 더 이상 만들지 않는다. 남아 있으면 판정이 끝날 때 지운다 |
 
-판정이 끝나면 둘 다 지운다. 실패든 통과든, 예외가 나도 지운다.
+판정이 끝나면 Service 를 지운다. 실패든 통과든, 예외가 나도 지운다. 삭제가 실패하면 세 번까지 다시 시도한다.
+프로세스가 그 전에 죽으면 다음 cicd 가 진행 맥박이 멈춘 앱의 canary 를 지운다.
 
 ## 판정 기준
 
@@ -44,7 +46,8 @@
 - 사용자 트래픽이 적으면 30초 동안 10% 로는 표본이 모자라다
 - 두 버전에 같은 요청을 같은 시각에 보내면 비교 기준이 같다
 
-사용자 트래픽 10% 는 실제로 새 버전으로 간다. 판정 수치는 cicd 요청 기준이다.
+판정 수치는 cicd 가 클러스터 안에서 보낸 요청 기준이다. 공개 주소의 사용자 요청은 판정 동안 이전 색으로 간다.
+`weight-percent` 는 이 판정에서 쓰지 않는다. 파드 비율 전략(`lily.deploy.strategy=canary`)의 가중치와는 별개다.
 
 ## 건너뛰는 경우
 

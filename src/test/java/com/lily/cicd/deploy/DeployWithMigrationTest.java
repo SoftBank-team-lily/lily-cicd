@@ -192,6 +192,8 @@ class DeployWithMigrationTest {
     private DeploymentEngine engine(long readinessSeconds) {
         DeployProperties properties = new DeployProperties();
         properties.setReadinessTimeoutSeconds(readinessSeconds);
+        properties.setReplicas(1);
+        properties.setDrainSeconds(0);
         return new DeploymentEngine(properties, new BlueGreenDeploymentStrategy(client, properties),
                 context -> context.database() == null ? Map.of() : DB_ENV,
                 new NginxIngressRouter(client), new Slf4jDeployLog(), new NoopDeployMonitor(),

@@ -3,6 +3,8 @@ package com.lily.cicd.config;
 import com.lily.cicd.deploy.BlueGreenDeploymentStrategy;
 import com.lily.cicd.deploy.CanaryAnalysis;
 import com.lily.cicd.deploy.CanaryDeploymentStrategy;
+import com.lily.cicd.deploy.DeployProgress;
+import com.lily.cicd.deploy.DeployRecovery;
 import com.lily.cicd.deploy.DeploymentStrategy;
 import com.lily.cicd.module.DatabaseProvisioner;
 import com.lily.cicd.module.DeployLog;
@@ -16,6 +18,7 @@ import com.lily.cicd.release.DeployLock;
 import com.lily.cicd.release.ReleaseStore;
 import com.lily.cicd.schema.SchemaMigrator;
 import io.fabric8.kubernetes.client.KubernetesClient;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -84,5 +87,18 @@ public class ModuleConfiguration {
     @Bean
     public DeployLock deployLock(KubernetesClient kubernetesClient) {
         return new DeployLock(kubernetesClient);
+    }
+
+    @Bean
+    public DeployRecovery deployRecovery(KubernetesClient kubernetesClient, SchemaMigrator schemaMigrator,
+                                         DatabaseProvisioner databaseProvisioner, ReleaseStore releaseStore,
+                                         DeployProgress progress) {
+        return new DeployRecovery(kubernetesClient, schemaMigrator, databaseProvisioner, releaseStore, progress);
+    }
+
+    /** 죽은 배포의 canary 와, 트래픽을 옮기기 전에 적용된 스키마를 정리한다 */
+    @Bean
+    public ApplicationRunner recoverInterruptedDeploys(DeployRecovery recovery) {
+        return args -> recovery.start();
     }
 }

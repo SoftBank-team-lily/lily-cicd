@@ -45,6 +45,15 @@ jacoco {
 tasks.named('test') {
     useJUnitPlatform()
     finalizedBy tasks.named('jacocoTestReport')
+    // Docker Desktop 은 npipe docker_engine 이 아니라 dockerDesktopLinuxEngine 을 쓴다.
+    // 비어 있으면 Testcontainers 가 Docker 를 못 찾고 DB 테스트를 건너뛴다.
+    def dockerHost = System.getenv('DOCKER_HOST')
+    if (!dockerHost && org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+        dockerHost = 'npipe:////./pipe/dockerDesktopLinuxEngine'
+    }
+    if (dockerHost) {
+        environment 'DOCKER_HOST', dockerHost
+    }
 }
 
 tasks.named('jacocoTestReport') {

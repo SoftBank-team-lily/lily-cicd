@@ -9,7 +9,6 @@ import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServiceBuilder;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
 import io.fabric8.kubernetes.api.model.networking.v1.Ingress;
-import io.fabric8.kubernetes.api.model.networking.v1.IngressBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientException;
 import org.slf4j.Logger;
@@ -33,14 +32,15 @@ import java.util.function.BiConsumer;
  * 블루그린 전환 전에 새 버전을 판정한다.
  *
  * <ol>
- *   <li>사용자 트래픽 일부(기본 10%)를 새 색으로 보낸다. ingress-nginx canary Ingress 를 같은 호스트에 둔다</li>
- *   <li>판정 시간 동안 새 버전과 이전 버전에 같은 요청을 같은 간격으로 보내 에러율과 p95 를 잰다</li>
+ *   <li>판정 시간 동안 새 버전과 이전 버전에 같은 요청을 클러스터 안에서 보내 에러율과 p95 를 잰다.
+ *       사용자 트래픽은 옮기지 않는다. 판정이 끝나기 전에 공개 주소가 새 버전을 보면 안 된다</li>
  *   <li>새 버전 Pod 가 재시작하거나 Ready 가 빠지면 실패</li>
  * </ol>
  *
  * 판정 요청을 cicd 가 직접 보내는 이유: ingress-nginx 요청 메트릭이 수집되지 않는 환경이 있고,
  * 사용자 트래픽이 적으면 표본이 모자라다. 두 버전에 같은 요청을 보내면 비교 기준이 같다.
- * 판정이 끝나면 canary Ingress 와 Service 는 {@link #cleanup} 으로 지운다.
+ * 판정이 끝나면 canary Service 를 {@link #cleanup} 으로 지운다.
+ * 예전에 만들어 둔 canary Ingress 가 남아 있으면 같이 지운다.
  */
 public class CanaryAnalysis {
 
@@ -91,9 +91,8 @@ public class CanaryAnalysis {
         // 응답을 한 번 받은 뒤에 사용자 트래픽을 열고, 그 요청은 표본에 넣지 않는다
         createService(context, plan);
         warmUp(canaryUrl);
-        createIngress(context);
-        stage.accept(DeployStages.CANARY_TRAFFIC, "canary: " + settings.getWeightPercent() + "% traffic -> "
-                + plan.target() + " (" + context.host() + ")");
+        stage.accept(DeployStages.CANARY_TRAFFIC, "canary: probe only, user traffic stays on "
+                + plan.previous() + " (" + context.host() + ")");
         stage.accept(DeployStages.CANARY_ANALYSIS, "canary: analysing " + path + " for "
                 + settings.getDurationSeconds() + "s, new=" + plan.target() + " old=" + plan.previous());
 
@@ -127,15 +126,21 @@ public class CanaryAnalysis {
         return Verdict.rejected(reason, summary);
     }
 
-    /** canary Ingress 와 Service 를 지운다. 없으면 넘어간다 */
+    /** canary Ingress 와 Service 를 지운다. 없으면 넘어가고, API 가 잠깐 실패하면 몇 번 다시 시도한다 */
     public void cleanup(String namespace, String app, List<String> logs) {
-        try {
-            k8sClient.network().v1().ingresses().inNamespace(namespace).withName(canaryIngressName(app)).delete();
-            k8sClient.services().inNamespace(namespace).withName(canaryServiceName(app)).delete();
-        } catch (KubernetesClientException e) {
-            log.warn("canary cleanup failed. app={} message={}", app, e.getMessage());
-            logs.add("canary: cleanup failed — " + e.getMessage());
+        KubernetesClientException last = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                k8sClient.network().v1().ingresses().inNamespace(namespace).withName(canaryIngressName(app)).delete();
+                k8sClient.services().inNamespace(namespace).withName(canaryServiceName(app)).delete();
+                return;
+            } catch (KubernetesClientException e) {
+                last = e;
+                sleep(200L * attempt);
+            }
         }
+        log.warn("canary cleanup failed. app={} message={}", app, last.getMessage());
+        logs.add("canary: cleanup failed — " + last.getMessage());
     }
 
     /** @return 판정 실패 이유. 통과면 null */
@@ -207,39 +212,6 @@ public class CanaryAnalysis {
                 .endSpec()
                 .build();
         k8sClient.services().inNamespace(namespace).resource(service).createOrReplace();
-    }
-
-    private void createIngress(DeployContext context) {
-        String namespace = context.namespace();
-        String app = context.appName();
-        Ingress ingress = new IngressBuilder()
-                .withNewMetadata()
-                    .withName(canaryIngressName(app))
-                    .withNamespace(namespace)
-                    .addToAnnotations("nginx.ingress.kubernetes.io/canary", "true")
-                    .addToAnnotations("nginx.ingress.kubernetes.io/canary-weight",
-                            String.valueOf(settings.getWeightPercent()))
-                .endMetadata()
-                .withNewSpec()
-                    .withIngressClassName("nginx")
-                    .addNewRule()
-                        .withHost(context.host())
-                        .withNewHttp()
-                            .addNewPath()
-                                .withPath("/")
-                                .withPathType("Prefix")
-                                .withNewBackend()
-                                    .withNewService()
-                                        .withName(canaryServiceName(app))
-                                        .withNewPort().withNumber(SERVICE_PORT).endPort()
-                                    .endService()
-                                .endBackend()
-                            .endPath()
-                        .endHttp()
-                    .endRule()
-                .endSpec()
-                .build();
-        k8sClient.network().v1().ingresses().inNamespace(namespace).resource(ingress).createOrReplace();
     }
 
     /** 한 번 응답(5xx 포함)을 받을 때까지 최대 WARM_UP_MILLIS. 연결이 안 되는 동안만 기다린다 */

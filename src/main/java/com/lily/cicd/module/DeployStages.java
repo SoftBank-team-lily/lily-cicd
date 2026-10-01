@@ -14,7 +14,7 @@ public final class DeployStages {
     public static final String ROLLBACK = "rollback";
     public static final String DEPLOYMENT = "deployment";
     public static final String READY = "ready";
-    /** 판정 동안 사용자 트래픽 일부를 새 버전으로 보냄 */
+    /** 판정 프로브 시작. 사용자 트래픽은 옮기지 않는다 */
     public static final String CANARY_TRAFFIC = "canary-traffic";
     /** 새 버전 판정 (통과·실패·건너뜀) */
     public static final String CANARY_ANALYSIS = "canary-analysis";

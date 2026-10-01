@@ -42,14 +42,16 @@
 2. **적용 대상 계산** — DB 의 `flyway_schema_history` (성공 행) 에 없는 V
 3. **lint** — 1 절 규칙
 4. **dry-run** (PostgreSQL) — 한 트랜잭션 안에서 대상 V 적용 → U 역순 → V 재적용 후 `ROLLBACK`.
-   U 가 실제로 V 를 되돌리는지 배포 전에 확인한다. MySQL 은 DDL 이 자동 커밋이라 건너뛴다
+   U 가 실제로 V 를 되돌리는지 배포 전에 확인한다. MySQL 은 DDL 이 자동 커밋이라 건너뛰고, 버전마다 적용한다.
+   한 파일이 중간에서 실패하면 history 에 없어도 그 버전의 U 를 시도한다. 앞 버전에 기록된 것은 기존처럼 되돌린다
 5. **migrate** — lily-cicd 안에서 Flyway (spring-boot 3.4 관리 버전, 10.20) 로 V 만 적용.
    `placeholderReplacement=false` (dry-run 과 같은 SQL), 세션 `lock_timeout 5s` (DDL 락 대기로 서비스가 멈추는 대신 실패)
 6. **보관** — 스크립트 전체를 ConfigMap `{app}-{slot}-schema` 에, 스키마 버전 등을 슬롯 Deployment 어노테이션에 남긴다
 7. 앱에는 `SPRING_FLYWAY_ENABLED=false` 를 넣는다. 스키마는 플랫폼만 바꾼다
 
 **migrate 이후 실패** — 슬롯 적용이나 Ready 대기에서 실패하면 새 Deployment 를 지우고, 이번에 적용한 버전을 U 로 되돌린다.
-되돌리지 못하면 (irreversible, U 실패) 로그에 남기고 배포는 실패로 끝난다. 트래픽을 옮긴 뒤의 실패는 되돌리지 않는다.
+되돌리지 못하면 (irreversible, U 실패) 실패 이유에 스키마가 남은 버전을 붙인다. 트래픽을 옮긴 뒤의 실패는 되돌리지 않는다.
+프로세스가 트래픽을 옮기기 전에 죽으면, 다음 cicd 가 진행 맥박이 멈춘 뒤 같은 U 로 되돌린다. 트래픽이 이미 새 슬롯이면 스키마는 그대로 둔다.
 
 ### Job 대신 lily-cicd 안에서 실행하는 이유
 SQL 은 어디서 돌든 같은 DB 에 같은 프로젝트 계정으로 실행된다. 격리로 얻는 것이 없고, Job 은 Pod 스케줄링과 이미지 pull 로 배포마다 10~20초를 더하며 ConfigMap/Secret/RBAC 가 늘어난다.

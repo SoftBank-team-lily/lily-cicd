@@ -25,6 +25,10 @@ lily:
     readiness-path: /actuator/health/readiness
     liveness-path: /actuator/health/liveness
     readiness-timeout-seconds: 120
+    # 슬롯 replica. 1 이면 Pod 하나가 죽는 동안 그 앱이 다운된다
+    replicas: 2
+    # selector 전환 뒤 이전 슬롯을 내리기 전 대기(초). Pod preStop 도 같은 값
+    drain-seconds: 5
     # blue-green 또는 canary. 다른 DeploymentStrategy 빈이 있으면 그 빈이 우선한다.
     strategy: blue-green
     # canary 일 때 새 버전이 받는 비율. 파드 5개 중 이 비율만큼 canary 에 둔다.

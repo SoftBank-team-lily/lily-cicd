@@ -30,18 +30,23 @@ rules:
   # delete: canary 판정이 끝나면 {app}-canary-svc, {app}-canary-ingress 를 지운다. docs/canary-analysis.md
   - apiGroups: [""]
     resources: ["services"]
-    verbs: ["get", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # 슬롯 replica 가 2 이상일 때 {app}-{color}-pdb. 노드 드레인으로 슬롯이 비지 않게 한다
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
     verbs: ["get", "create", "update", "patch", "delete"]
   # canary 판정 중 새 Pod 재시작 확인
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
   # 슬롯별 마이그레이션 스크립트 보관 ({app}-{slot}-schema). docs/schema-migration.md
+  # list: 죽은 배포의 진행 기록·복구 기록과 남은 canary 를 찾는다
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "create", "update", "delete"]
+    verbs: ["get", "list", "create", "update", "delete"]
   # 슬롯별 DB 접속 정보 ({app}-{slot}-db). Deployment 스펙에 비밀번호를 평문으로 두지 않으려고 쓴다
   - apiGroups: [""]
     resources: ["secrets"]

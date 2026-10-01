@@ -1,0 +1,79 @@
+package com.lily.cicd.module;
+
+import io.fabric8.kubernetes.api.model.networking.v1.Ingress;
+import io.fabric8.kubernetes.api.model.networking.v1.IngressBuilder;
+import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.server.mock.KubernetesServer;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class NginxIngressRouterTest {
+
+    private static KubernetesServer server;
+    private KubernetesClient client;
+
+    @BeforeAll
+    static void start() {
+        server = new KubernetesServer(false, true);
+        server.before();
+    }
+
+    @AfterAll
+    static void stop() {
+        server.after();
+    }
+
+    @BeforeEach
+    void reset() {
+        client = server.getClient();
+        client.network().v1().ingresses().inNamespace("default").delete();
+    }
+
+    @Test
+    void 다시_배포해도_다른_호스트는_남긴다() {
+        client.network().v1().ingresses().inNamespace("default").resource(new IngressBuilder()
+                .withNewMetadata().withName("blog-ingress").withNamespace("default").endMetadata()
+                .withNewSpec()
+                    .withIngressClassName("nginx")
+                    .addNewRule().withHost("blog.apps.lilycloud.kr").withNewHttp()
+                        .addNewPath().withPath("/").withPathType("Prefix")
+                            .withNewBackend().withNewService().withName("blog-svc")
+                                .withNewPort().withNumber(80).endPort()
+                            .endService().endBackend()
+                        .endPath()
+                    .endHttp().endRule()
+                    .addNewRule().withHost("blog.43.200.152.53.nip.io").withNewHttp()
+                        .addNewPath().withPath("/").withPathType("Prefix")
+                            .withNewBackend().withNewService().withName("blog-svc")
+                                .withNewPort().withNumber(80).endPort()
+                            .endService().endBackend()
+                        .endPath()
+                    .endHttp().endRule()
+                    .addNewTl().withHosts("blog.43.200.152.53.nip.io").withSecretName("extra-tls").endTl()
+                .endSpec()
+                .build()).create();
+
+        new NginxIngressRouter(client).route(new DeployContext(
+                "blog", "default", "image:2", 8080, 80, "blog.apps.lilycloud.kr", "2",
+                "green", "blog-svc", "/actuator/prometheus"));
+
+        Ingress ingress = client.network().v1().ingresses().inNamespace("default").withName("blog-ingress").get();
+        List<String> hosts = ingress.getSpec().getRules().stream().map(rule -> rule.getHost()).toList();
+        assertEquals(2, hosts.size());
+        assertTrue(hosts.contains("blog.apps.lilycloud.kr"));
+        assertTrue(hosts.contains("blog.43.200.152.53.nip.io"));
+        assertEquals("blog-svc", ingress.getSpec().getRules().stream()
+                .filter(rule -> "blog.apps.lilycloud.kr".equals(rule.getHost()))
+                .findFirst().orElseThrow()
+                .getHttp().getPaths().get(0).getBackend().getService().getName());
+        assertEquals("extra-tls", ingress.getSpec().getTls().get(0).getSecretName());
+        assertTrue(ingress.getMetadata().getAnnotations().containsKey("kubernetes.io/ingress.class"));
+    }
+}

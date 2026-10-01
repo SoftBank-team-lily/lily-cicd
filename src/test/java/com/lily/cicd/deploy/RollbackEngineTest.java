@@ -242,6 +242,8 @@ class RollbackEngineTest {
     private RollbackEngine engine(long readinessSeconds) {
         DeployProperties properties = new DeployProperties();
         properties.setReadinessTimeoutSeconds(readinessSeconds);
+        properties.setReplicas(1);
+        properties.setDrainSeconds(0);
         DatabaseProvisioner database = context -> DB_ENV;
         return new RollbackEngine(properties, new BlueGreenDeploymentStrategy(client, properties), database,
                 new Slf4jDeployLog(), new NoopDeployMonitor(), migrator, new ReleaseStore(client), new DeployLock(client));

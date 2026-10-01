@@ -6,6 +6,7 @@ import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
 import io.fabric8.kubernetes.api.model.IntOrString;
 import io.fabric8.kubernetes.api.model.Service;
+import io.fabric8.kubernetes.api.model.policy.v1.PodDisruptionBudgetBuilder;
 import io.fabric8.kubernetes.api.model.ServiceBuilder;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
 import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
@@ -31,7 +32,6 @@ import java.util.concurrent.TimeUnit;
 public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(BlueGreenDeploymentStrategy.class);
-    private static final int REPLICAS = 1;
     private static final int SERVICE_PORT = 80;
     private static final String COLOR_BLUE = "blue";
     private static final String COLOR_GREEN = "green";
@@ -102,7 +102,9 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
             // Fabric8 6.13 은 server-side apply 를 권장하며 createOrReplace 를 deprecated 로 표시한다.
             // 이 모듈의 계약이 createOrReplace 이므로 호출은 유지한다.
             k8sClient.apps().deployments().inNamespace(namespace).resource(deployment).createOrReplace();
-            logs.add("step2: applied deployment " + name + " image=" + command.imageUrl());
+            applyDisruptionBudget(namespace, command.appName(), plan.target(), replicas());
+            logs.add("step2: applied deployment " + name + " image=" + command.imageUrl()
+                    + " replicas=" + replicas());
         } catch (KubernetesClientException e) {
             log.error("failed to apply deployment. namespace={} name={} code={} message={}",
                     namespace, name, e.getCode(), e.getMessage(), e);
@@ -183,6 +185,8 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
                 logs.add("step6: previous deployment absent, skip scale down " + name);
                 return;
             }
+            // selector 는 이미 새 색이다. nginx 가 엔드포인트를 따라갈 때까지 이전 Pod 를 Ready 로 둔다
+            SlotPods.waitBeforeRemove(properties.getDrainSeconds(), logs);
             k8sClient.apps().deployments().inNamespace(namespace).withName(name).scale(0);
             logs.add("step6: scaled to 0 " + name);
         } catch (KubernetesClientException e) {
@@ -215,7 +219,7 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
     }
 
     /**
-     * 이전 슬롯을 replica 1 로 올리고 Ready 를 기다린 뒤 selector 의 color 만 바꾼다.
+     * 이전 슬롯을 설정한 replica 로 올리고 Ready 를 기다린 뒤 selector 의 color 만 바꾼다.
      * Ready 가 되지 않으면 다시 0 으로 내리고 트래픽은 건드리지 않는다.
      */
     @Override
@@ -223,8 +227,8 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
         String name = deploymentName(appName, plan.target());
         long timeout = properties.getReadinessTimeoutSeconds();
         var deployment = k8sClient.apps().deployments().inNamespace(namespace).withName(name);
-        deployment.scale(REPLICAS);
-        logs.add("rollback: scaled " + name + " replicas=" + REPLICAS);
+        deployment.scale(replicas());
+        logs.add("rollback: scaled " + name + " replicas=" + replicas());
         try {
             if (deployment.waitUntilReady(timeout, TimeUnit.SECONDS) == null) {
                 throw new KubernetesClientTimeoutException("Deployment", name, namespace, timeout, TimeUnit.SECONDS);
@@ -261,7 +265,7 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
                     .addToLabels(labels)
                 .endMetadata()
                 .withNewSpec()
-                    .withReplicas(REPLICAS)
+                    .withReplicas(replicas())
                     .withNewSelector()
                         .addToMatchLabels(labels)
                     .endSelector()
@@ -297,7 +301,44 @@ public class BlueGreenDeploymentStrategy implements DeploymentStrategy {
                     .endTemplate()
                     .endSpec();
         }
-        return builder.build();
+        Deployment deployment = builder.build();
+        SlotPods.preStop(deployment.getSpec().getTemplate().getSpec(), properties.getDrainSeconds());
+        return deployment;
+    }
+
+    /**
+     * replica 가 2 이상이면 노드 드레인으로 슬롯이 통째로 비지 않게 한다.
+     * 1 이면 minAvailable 1 이 그 Pod 의 축출을 막으므로 PDB 를 두지 않고, 예전 것이 있으면 지운다.
+     */
+    private void applyDisruptionBudget(String namespace, String appName, String color, int replicas) {
+        String name = deploymentName(appName, color) + "-pdb";
+        if (replicas < 2) {
+            k8sClient.policy().v1().podDisruptionBudget().inNamespace(namespace).withName(name).delete();
+            return;
+        }
+        k8sClient.policy().v1().podDisruptionBudget().inNamespace(namespace).resource(new PodDisruptionBudgetBuilder()
+                .withNewMetadata()
+                    .withName(name)
+                    .withNamespace(namespace)
+                    .addToLabels("app", appName)
+                    .addToLabels("color", color)
+                .endMetadata()
+                .withNewSpec()
+                    .withMinAvailable(new IntOrString(1))
+                    .withNewSelector()
+                        .addToMatchLabels("app", appName)
+                        .addToMatchLabels("color", color)
+                    .endSelector()
+                .endSpec()
+                .build()).createOrReplace();
+    }
+
+    private int replicas() {
+        int replicas = properties.getReplicas();
+        if (replicas < 1 || replicas > 5) {
+            throw new IllegalArgumentException("replicas 는 1 이상 5 이하여야 한다: " + replicas);
+        }
+        return replicas;
     }
 
     /**

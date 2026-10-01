@@ -343,6 +343,38 @@ class K8sBlueGreenDeployerTest {
         assertNull(client.services().inNamespace(NAMESPACE).withName("lily-svc").get());
     }
 
+    @Test
+    void 슬롯은_둘이고_내려가기_전에_엔드포인트가_빠질_시간을_둔다() {
+        startReadyMarker();
+        DeployProperties properties = new DeployProperties();
+        properties.setReadinessTimeoutSeconds(8);
+        properties.setDrainSeconds(5);
+
+        DeploymentResultDto result = new DeploymentEngine(
+                properties,
+                new BlueGreenDeploymentStrategy(client, properties),
+                new NoopDatabaseProvisioner(),
+                new NginxIngressRouter(client),
+                new Slf4jDeployLog(),
+                new NoopDeployMonitor(),
+                schemaMigrator,
+                new ReleaseStore(client),
+                new DeployLock(client))
+                .deploy(APP, IMAGE, 8080)
+                .join();
+
+        assertEquals("SUCCESS", result.status());
+        Deployment blue = deployment("lily-blue");
+        assertEquals(2, blue.getSpec().getReplicas());
+        assertEquals(35L, blue.getSpec().getTemplate().getSpec().getTerminationGracePeriodSeconds());
+        assertEquals("sleep", blue.getSpec().getTemplate().getSpec().getContainers().get(0)
+                .getLifecycle().getPreStop().getExec().getCommand().get(0));
+        assertEquals("5", blue.getSpec().getTemplate().getSpec().getContainers().get(0)
+                .getLifecycle().getPreStop().getExec().getCommand().get(1));
+        assertEquals(1, client.policy().v1().podDisruptionBudget().inNamespace(NAMESPACE)
+                .withName("lily-blue-pdb").get().getSpec().getMinAvailable().getIntVal());
+    }
+
     private DeploymentEngine deployer(long timeoutSeconds) {
         return deployer(timeoutSeconds,
                 new NoopDatabaseProvisioner(),
@@ -359,6 +391,8 @@ class K8sBlueGreenDeployerTest {
             DeployMonitor monitor) {
         DeployProperties properties = new DeployProperties();
         properties.setReadinessTimeoutSeconds(timeoutSeconds);
+        properties.setReplicas(1);
+        properties.setDrainSeconds(0);
         return new DeploymentEngine(
                 properties,
                 new BlueGreenDeploymentStrategy(client, properties),

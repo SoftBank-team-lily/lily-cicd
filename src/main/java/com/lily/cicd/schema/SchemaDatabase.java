@@ -96,22 +96,32 @@ public class SchemaDatabase {
 
     /** V 파일만 Flyway 로 적용한다. PostgreSQL 은 대상 전체가 한 트랜잭션이다 (group) */
     public List<MigrationVersion> migrate(MigrationSet scripts) {
+        return migrate(scripts, null);
+    }
+
+    /**
+     * @param upTo 이 버전까지만 적용한다. null 이면 대기 중인 V 전부.
+     *             이미 적용된 V 도 폴더에 있어야 Flyway 검증을 통과한다
+     */
+    public List<MigrationVersion> migrate(MigrationSet scripts, MigrationVersion upTo) {
         Path dir = null;
         try {
             dir = Files.createTempDirectory("lily-migrations-");
             for (MigrationScript script : scripts.versionedScripts()) {
                 Files.writeString(dir.resolve(script.fileName()), script.sql());
             }
-            MigrateResult result = Flyway.configure(getClass().getClassLoader())
+            var configure = Flyway.configure(getClass().getClassLoader())
                     .dataSource(target.url(), target.username(), target.password())
                     .locations("filesystem:" + dir.toAbsolutePath())
                     // dry-run 과 같은 SQL 을 실행하려고 ${} 치환을 끈다
                     .placeholderReplacement(false)
                     .group(true)
                     .initSql(target.postgres() ? "SET lock_timeout = '5s'" : "SET SESSION lock_wait_timeout = 5")
-                    .connectRetries(2)
-                    .load()
-                    .migrate();
+                    .connectRetries(2);
+            if (upTo != null) {
+                configure.target(upTo);
+            }
+            MigrateResult result = configure.load().migrate();
             return result.migrations.stream().map(m -> MigrationVersion.fromVersion(m.version)).toList();
         } catch (FlywayException e) {
             throw new SchemaOperationException("flyway migrate 실패: " + e.getMessage(), e);

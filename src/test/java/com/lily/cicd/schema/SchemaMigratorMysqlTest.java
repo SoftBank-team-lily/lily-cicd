@@ -93,6 +93,21 @@ class SchemaMigratorMysqlTest {
         assertTrue(logs.contains("schema: reverted [2]"), logs::toString);
     }
 
+    @Test
+    void 한_파일_안에서_커밋된_DDL은_U로_되돌린다() throws SQLException {
+        migrator.migrate(env(), MigrationSet.parse(Map.of("V1__posts.sql", V1, "U1__posts.sql", U1)), logs);
+        MigrationSet scripts = MigrationSet.parse(Map.of(
+                "V1__posts.sql", V1, "U1__posts.sql", U1,
+                "V2__partial.sql", "create table extra(id int); alter table missing_table add column y int;",
+                "U2__partial.sql", "drop table extra;"));
+
+        assertThrows(SchemaOperationException.class, () -> migrator.migrate(env(), scripts, logs));
+
+        assertEquals(0, count("select count(*) from information_schema.tables "
+                + "where table_schema = database() and table_name = 'extra'"));
+        assertTrue(logs.stream().anyMatch(line -> line.contains("reverted unrecorded")), logs::toString);
+    }
+
     private static Map<String, String> env() {
         return Map.of("DB_URL", MYSQL.getJdbcUrl(), "DB_USERNAME", MYSQL.getUsername(),
                 "DB_PASSWORD", MYSQL.getPassword());

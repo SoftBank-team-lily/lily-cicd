@@ -68,11 +68,15 @@ public class SchemaMigrator {
             db.dryRun(dryRunSteps(pending, scripts));
             logs.add("schema: dry-run ok (V → U → V, rolled back)");
         } else {
-            logs.add("schema: dry-run skipped (mysql DDL 은 트랜잭션으로 되돌릴 수 없다)");
+            logs.add("schema: dry-run skipped (mysql DDL 은 트랜잭션으로 되돌릴 수 없다). 버전마다 적용한다");
         }
 
         try {
-            db.migrate(scripts);
+            if (db.transactionalDdl()) {
+                db.migrate(scripts);
+            } else {
+                migrateMysql(db, pending, scripts, logs);
+            }
         } catch (SchemaOperationException e) {
             Set<MigrationVersion> partial = new HashSet<>(db.appliedVersions());
             partial.removeAll(applied);
@@ -124,6 +128,29 @@ public class SchemaMigrator {
         List<MigrationScript> undo = scripts.undoScripts(versions);
         db.undo(undo);
         logs.add("schema: reverted " + names(undo) + " -> now " + SchemaVersions.format(target));
+    }
+
+    /**
+     * MySQL 은 파일 안의 DDL 이 문장마다 커밋된다. Flyway 가 버전을 기록하기 전에 앞 문장만 남으면
+     * history 로는 되돌릴 수 없으므로, 그 버전의 U 를 바로 시도한다.
+     */
+    private void migrateMysql(SchemaDatabase db, List<MigrationScript> pending, MigrationSet scripts, List<String> logs) {
+        for (MigrationScript script : pending) {
+            try {
+                db.migrate(scripts, script.version());
+            } catch (SchemaOperationException e) {
+                if (!db.appliedVersions().contains(script.version()) && scripts.undo(script.version()).isPresent()) {
+                    logs.add("schema: " + script.fileName() + " 은 history 에 없다. 커밋된 문장이 있으면 U 를 시도한다");
+                    try {
+                        db.undo(List.of(scripts.undo(script.version()).orElseThrow()));
+                        logs.add("schema: reverted unrecorded " + script.version());
+                    } catch (RuntimeException undo) {
+                        logs.add("schema: 되돌리기 실패 — " + undo.getMessage());
+                    }
+                }
+                throw e;
+            }
+        }
     }
 
     private void revertQuietly(SchemaDatabase db, MigrationSet scripts, Collection<MigrationVersion> versions,

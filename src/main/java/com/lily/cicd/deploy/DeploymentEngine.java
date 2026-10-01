@@ -60,6 +60,8 @@ public class DeploymentEngine {
     private final StageRecorder recorder;
     /** null 이면 canary 판정 없이 바로 전환한다 */
     private final CanaryAnalysis canary;
+    /** null 이면 프로세스가 죽어도 스키마를 되돌리지 않는다 */
+    private final DeployRecovery recovery;
 
     /** canary 판정과 진행 상황 기록 없이 */
     public DeploymentEngine(
@@ -73,7 +75,7 @@ public class DeploymentEngine {
             ReleaseStore releaseStore,
             DeployLock deployLock) {
         this(properties, strategy, databaseProvisioner, trafficRouter, deployLog, deployMonitor,
-                schemaMigrator, releaseStore, deployLock, null, null);
+                schemaMigrator, releaseStore, deployLock, null, null, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -88,7 +90,8 @@ public class DeploymentEngine {
             ReleaseStore releaseStore,
             DeployLock deployLock,
             CanaryAnalysis canary,
-            DeployProgress progress) {
+            DeployProgress progress,
+            DeployRecovery recovery) {
         this.properties = properties;
         this.strategy = strategy;
         this.databaseProvisioner = databaseProvisioner;
@@ -99,6 +102,7 @@ public class DeploymentEngine {
         this.deployLock = deployLock;
         this.recorder = new StageRecorder(deployLog, deployMonitor, progress);
         this.canary = canary;
+        this.recovery = recovery;
     }
 
     @Async
@@ -165,6 +169,10 @@ public class DeploymentEngine {
 
             try {
                 releaseStore.saveScripts(namespace, appName, plan.target(), scripts);
+                if (recovery != null && !change.applied().isEmpty()) {
+                    recovery.arm(namespace, appName, plan.target(),
+                            SchemaVersions.format(change.from()), command.database());
+                }
                 strategy.applyTarget(command, namespace, plan, appEnv, logs);
                 recorder.record(context, logs, DeployStages.DEPLOYMENT, last(logs));
                 releaseStore.annotate(namespace, appName, plan.target(), Instant.now(),
@@ -180,19 +188,22 @@ public class DeploymentEngine {
                 }
             } catch (RuntimeException e) {
                 closeCanary(namespace, appName, logs);
-                boolean reverted = revertSchema(databaseEnv, scripts, change, logs);
+                revertSchema(databaseEnv, scripts, change, logs, e);
                 if (e instanceof CanaryRejectedException) {
                     throw new CanaryRejectedException(e.getMessage(), logs);
                 }
-                if (reverted && e instanceof DeploymentFailedException) {
+                if (!change.applied().isEmpty() && e instanceof DeploymentFailedException failed) {
                     // 예외의 로그는 만들 때 복사된다. 되돌린 결과를 응답에 담으려고 다시 만든다
-                    throw new DeploymentFailedException(e.getMessage(), logs, e.getCause());
+                    throw new DeploymentFailedException(failed.getMessage(), logs, failed.getCause());
                 }
                 throw e;
             }
 
             try {
                 strategy.switchTraffic(command, namespace, plan, logs);
+                if (recovery != null) {
+                    recovery.clear(namespace, appName);
+                }
             } finally {
                 closeCanary(namespace, appName, logs);
             }
@@ -280,22 +291,22 @@ public class DeploymentEngine {
     }
 
     /**
-     * 트래픽을 옮기기 전에 실패했으면 이번에 적용한 버전을 되돌린다. 되돌리기 실패는 로그로만 남긴다.
-     *
-     * @return 되돌리기를 시도했으면 true (logs 에 결과가 추가됐다)
+     * 트래픽을 옮기기 전에 실패했으면 이번에 적용한 버전을 되돌린다.
+     * 되돌리기 자체가 실패하면 배포 실패 이유에 스키마가 남은 버전을 붙인다.
      */
-    private boolean revertSchema(Map<String, String> databaseEnv, MigrationSet scripts, SchemaChange change,
-                                 List<String> logs) {
+    private void revertSchema(Map<String, String> databaseEnv, MigrationSet scripts, SchemaChange change,
+                              List<String> logs, RuntimeException deployError) {
         if (change.applied().isEmpty()) {
-            return false;
+            return;
         }
         try {
             schemaMigrator.rollback(databaseEnv, scripts, change.from(), false, logs);
         } catch (RuntimeException e) {
             log.error("schema revert failed. message={}", e.getMessage(), e);
-            logs.add("schema: 되돌리지 못함, 스키마는 " + SchemaVersions.format(change.to()) + " 에 남음 — " + e.getMessage());
+            String stuck = "스키마를 되돌리지 못함. 스키마는 " + SchemaVersions.format(change.to()) + " 에 남음";
+            logs.add("schema: " + stuck + " — " + e.getMessage());
+            throw new DeploymentFailedException(deployError.getMessage() + ". " + stuck, logs, e);
         }
-        return true;
     }
 
     private void route(DeployContext context, List<String> logs) {

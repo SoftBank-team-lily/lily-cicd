@@ -259,7 +259,9 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
                     .endTemplate()
                     .endSpec();
         }
-        return builder.build();
+        Deployment deployment = builder.build();
+        SlotPods.preStop(deployment.getSpec().getTemplate().getSpec(), properties.getDrainSeconds());
+        return deployment;
     }
 
     private static Map<String, String> plainEnv(DeployCommand command, String track) {
