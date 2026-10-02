@@ -52,7 +52,7 @@ DeploymentEngine
 
 ### 블루그린 전환 전 Canary 판정
 
-새 색이 Ready가 되면 바로 전환하지 않습니다. 사용자 트래픽은 이전 색에 두고, cicd가 `{app}-canary-svc`로 30초 동안 새 색과 이전 색에 같은 요청을 보내 에러율과 p95를 비교합니다. `{app}-canary-ingress`는 만들지 않습니다. 새 Pod의 재시작과 Ready 이탈도 확인합니다. 통과하면 100%로 전환하고, 실패하면 새 Deployment를 지우고 이번 스키마 변경을 되돌립니다. 이때 응답은 `422 ROLLED_BACK`이고 트래픽은 이전 색에 그대로 있습니다. 진행 단계는 `GET /api/deployments/{app}/progress`로 봅니다. 기준과 설정은 [docs/canary-analysis.md](docs/canary-analysis.md)에 있습니다.
+새 색이 Ready가 되면 바로 전환하지 않습니다. 사용자 트래픽은 이전 색에 두고, cicd가 `{app}-canary-svc`로 30초 동안 새 색과 이전 색에 같은 요청을 보내 에러율과 p95를 비교합니다. `{app}-canary-ingress`는 만들지 않습니다. 새 Pod의 재시작과 Ready 이탈도 확인합니다. 통과하면 100%로 전환하고, 실패하면 새 Deployment를 지우고 이번 스키마 변경을 되돌립니다. 이때 응답은 `422 ROLLED_BACK`이고 트래픽은 이전 색에 그대로 있습니다. 이전 색이 Ready가 아니거나 `{app}-ingress`에 이번 호스트 규칙이 아직 없으면 판정을 건너뜁니다. 진행 단계는 `GET /api/deployments/{app}/progress`로 봅니다. 기준과 설정은 [docs/canary-analysis.md](docs/canary-analysis.md)에 있습니다.
 
 ### Canary
 
@@ -107,12 +107,14 @@ flowchart LR
   api --> green
   api --> svc
 
-  user -->|"lily.domain.com"| ingress
+  user -->|"{app}.lilycloud.kr"| ingress
   ingress --> svc
 
   svc -->|"active = blue"| blue
   svc -.->|"선택되지 않음"| green
 ```
+
+호스트는 요청의 `host`, 없으면 `{appName}.{lily.deploy.domain}`입니다 (k3s: `lilycloud.kr`). 예전 `{app}.apps.lilycloud.kr` 규칙은 Ingress에 남아 있습니다.
 
 ---
 
@@ -123,6 +125,8 @@ flowchart LR
 기본 전략인 Blue-Green은 현재 Service의 Selector를 기준으로 다음 배포 대상을 결정합니다.
 
 ```text
+database.prepare()     # databaseEnv 가 있으면 DB 모듈을 부르지 않는다
+
 active = service.selector.color
 
 if service 가 없거나 active 가 green 또는 비어 있음:
@@ -136,17 +140,21 @@ else if active 가 blue:
 else:
     중단
 
-database.prepare()
+migrate()              # migrations 가 있을 때
 
 apply deployment(target)
 
 wait ready(120s)
+
+canary.judge()         # 이전 색이 Ready 일 때만, 30초
 
 service.selector.color = target
 
 router.route(service)
 
 monitor.attached()
+
+sleep(drain-seconds)   # 기본 5초
 
 scale(previous, 0)
 ```
@@ -181,7 +189,7 @@ flowchart TD
 
 #### Ready 이전 실패
 
-Ready 상태 확인에 실패하면 대상 Deployment를 삭제합니다.
+Ready 상태 확인에 실패하면 대상 Deployment를 삭제합니다. 지우기 전에 컨테이너 상태(재시작, 종료 코드), Warning 이벤트, 마지막 로그를 `diagnosis:` 줄로 응답 logs에 남깁니다. 환경변수 값과 Secret 값은 가립니다.
 
 이 시점에는 Service Selector가 변경되지 않았으므로 사용자 트래픽은 계속 기존 슬롯으로 전달됩니다.
 
@@ -190,6 +198,10 @@ Ready 상태 확인에 실패하면 대상 Deployment를 삭제합니다.
 Service Selector가 변경된 이후에는 이미 사용자 트래픽이 새 슬롯으로 전달되고 있습니다.
 
 따라서 Router 또는 Monitoring 단계에서 오류가 발생하더라도 새 슬롯은 삭제하지 않습니다. 새 슬롯을 제거하면 이미 전환된 트래픽이 즉시 중단되기 때문입니다.
+
+#### 배포 프로세스가 죽은 경우
+
+진행 맥박(`lily-progress-{app}`)이 20초 넘게 멈추면 cicd가 남은 canary Service를 지우고, 트래픽이 아직 이전 슬롯이면 이번 스키마 변경을 되돌립니다 (`DeployRecovery`).
 
 ---
 
@@ -236,6 +248,8 @@ DB, Router, Logging, Monitoring 모듈은 배포 절차를 직접 알 필요 없
 | `targetColor` | 배포 대상 슬롯             |
 | `serviceName` | Service 이름           |
 | `metricsPath` | Prometheus 수집 경로     |
+| `database`    | DB 엔진 (postgres / mysql). null 이면 DB 없음 |
+| `aliases`     | `host`와 같은 Service로 보내는 추가 호스트 |
 
 동일 타입의 Spring Bean이 등록되어 있으면 해당 구현체가 사용됩니다.
 
@@ -256,6 +270,36 @@ DB, Router, Logging, Monitoring 모듈은 배포 절차를 직접 알 필요 없
 * V 파일마다 같은 버전의 `U{버전}__*.sql`이 있어야 합니다. 되돌릴 수 없는 contract 변경은 `-- lily:irreversible`로 표시합니다.
 * 이름·타입 변경, 기본값 없는 `NOT NULL` 추가는 이전 슬롯의 쿼리를 깨뜨리므로 거절합니다.
 * `POST /api/deployments/{appName}/rollback`, `GET /api/deployments/{appName}`
+
+## 배포 요청
+
+`POST /api/deployments`
+
+| 필드 | 설명 |
+| --- | --- |
+| `imageUrl`, `targetPort` | 필수 |
+| `appName`, `namespace`, `domain`, `appVersion`, `imagePullSecret`, `extraEnv` | 생략하면 설정 기본값 |
+| `readinessPath`, `livenessPath` | `tcp`를 주면 HTTP 대신 포트가 열렸는지만 봅니다 |
+| `database` | `postgres` / `mysql`. DB 모듈로 테넌트 DB를 만들고 접속 정보를 슬롯 Secret에 넣습니다 |
+| `databaseEnv` | DB 접속 환경변수를 직접 줍니다 (온프레미스 DB를 역방향 터널로 쓰는 대기 배포). DB 모듈을 부르지 않습니다. `database`와 같이 보내면 400 |
+| `host` | 생략하면 `{appName}.{domain}` |
+| `aliases` | `host`와 같은 Service로 보내는 추가 Ingress 호스트. lily-builder 엣지 Worker가 PC 장애 때 보내는 `{app}-cloud.{존}` |
+| `migrations` | 파일명 → SQL |
+| `canaryPath` | Canary 판정 경로. 생략하면 readiness 경로 |
+
+성공 응답은 `status`, `activeColor`, `targetHostUrl`, `schemaVersion`, `logs`입니다. 실패는 `{status, message, logs}`로 400(입력), `409 REJECTED`(같은 앱 배포·롤백 진행 중), `422 ROLLED_BACK`(판정 실패), `500 FAILED`입니다.
+
+## 앱 관리
+
+| 호출 | 동작 |
+| --- | --- |
+| `GET /api/apps/{app}` | 활성 슬롯과 replica |
+| `PUT /api/apps/{app}/replicas` | 활성 슬롯 replica 조정 (0~5) |
+| `POST /api/apps/{app}/stop` | 모든 슬롯을 0으로. Service, Ingress, DB, 릴리스 기록은 남습니다 |
+| `POST /api/apps/{app}/start` | 활성 슬롯을 `lily.deploy.replicas`로 |
+| `DELETE /api/apps/{app}?database=` | Ingress, Deployment, Service, PDB, Secret, ConfigMap 삭제. `database=true`면 DB도 DROP (되돌릴 수 없음) |
+
+stop, start, delete는 배포·롤백과 같은 Lease 잠금을 잡습니다. 진행 중이면 `409`, 앱이 없으면 `404`입니다.
 
 ## 모듈별 책임
 
@@ -285,7 +329,7 @@ Deployment 생성 이전에 실행됩니다.
 
 트래픽 전환 이후 실행됩니다.
 
-기본 구현은 Nginx Ingress를 생성하며 다음 규칙을 사용합니다.
+기본 구현은 `{appName}-ingress`에 `host`와 `aliases` 규칙만 넣습니다. 다른 호스트 규칙과 TLS는 그대로 두고, 이번 배포에 없는 별칭 규칙도 지우지 않습니다.
 
 * Ingress 이름: `{appName}-ingress`
 * Ingress Class: `nginx`
@@ -403,7 +447,8 @@ Ready 상태 확인 이후 다시 `blue`로 전환됩니다.
 | Initial Delay            | 5초                           |
 | Probe Period             | 3초                           |
 | APP_COLOR                | Target Color                 |
-| Termination Grace Period | 30초                          |
+| Startup                  | liveness 경로, 5초 간격 36회 (최대 3분) |
+| Termination Grace Period | 30초 + `drain-seconds` (기본 35초), preStop `sleep 5` |
 
 기본 프로파일은 `prod`입니다.
 
@@ -427,10 +472,11 @@ SPRING_PROFILES_ACTIVE=local
 | Canary 구현           | `CanaryDeploymentStrategy` |
 | 확장 모듈 인터페이스        | `com.lily.cicd.module`     |
 | 배포 API             | `POST /api/deployments`    |
+| 앱 관리 API          | `AppController`, `AppRemover` (`/api/apps/{app}`) |
 | 롤백 엔진              | `RollbackEngine`, `POST /api/deployments/{appName}/rollback` |
 | 스키마 마이그레이션         | `com.lily.cicd.schema` (`SchemaMigrator`, `MigrationLinter`) |
 | 릴리스 기록, 배포 잠금      | `com.lily.cicd.release` (`ReleaseStore`, `DeployLock`) |
 | 결과 DTO             | `DeploymentResultDto`      |
-| 배포 테스트             | `K8sBlueGreenDeployerTest`, `CanaryDeploymentStrategyTest`, `DeployWithMigrationTest`, `RollbackEngineTest` |
+| 배포 테스트             | `K8sBlueGreenDeployerTest`, `CanaryDeploymentStrategyTest`, `CanaryAnalysisTest`, `DeployWithMigrationTest`, `RollbackEngineTest`, `DeployRecoveryTest`, `PodDiagnosticsTest`, `ProbesTest`, `AppRemoverTest`, `NginxIngressRouterTest` |
 | 스키마 테스트            | `SchemaMigratorPostgresTest`, `SchemaMigratorMysqlTest` (Testcontainers, Docker 필요) |
 | 커버리지 검사            | `./gradlew check` 가 라인 커버리지 75% 초과를 요구합니다 |
