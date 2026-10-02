@@ -7,7 +7,7 @@
 앱을 다시 배포하면 로드밸런싱 쪽에서 손으로 추가해 둔 접속 주소가 사라지고, 그 주소로는 404 가 나는 문제
 
 - Ingress 는 "이 도메인으로 들어온 요청을 어느 Service 로 보낼지" 적어 둔 목록이다. 앱마다 `{app}-ingress` 가 하나 있다
-- 당시 cicd 는 배포 마지막에 `NginxIngressRouter` 가 `{app}-ingress` 를 **호스트 하나짜리로 새로 만들어 통째로 교체(createOrReplace)** 했다. 호스트는 요청의 `host`, 없으면 `{app}.{LILY_DEPLOY_DOMAIN}` (지금 `apps.lilycloud.kr`). 지금은 그 호스트 규칙만 갈아 끼우고, 다른 호스트와 TLS 는 유지한다
+- 당시 cicd 는 배포 마지막에 `NginxIngressRouter` 가 `{app}-ingress` 를 **호스트 하나짜리로 새로 만들어 통째로 교체(createOrReplace)** 했다. 호스트는 요청의 `host`, 없으면 `{app}.{LILY_DEPLOY_DOMAIN}` (지금 `lilycloud.kr`). 지금은 그 호스트 규칙만 갈아 끼우고, 다른 호스트와 TLS 는 유지한다
 - 그런데 lily-loadbalancer 쪽에서 같은 Ingress 에 호스트를 손으로 추가해 뒀다 (`blog.43.200.152.53.nip.io` 등, `kubectl apply`)
 - 같은 리소스를 cicd(fabric8)와 사람(kubectl)이 같이 고치고 있어서, cicd 가 쓸 때마다 사람이 넣은 내용이 덮이는 구조임을 확인 (managedFields 에 `fabric8-kubernetes-client`, `kubectl-client-side-apply` 둘 다 있음)
 
