@@ -1,6 +1,7 @@
 package com.lily.cicd.deploy;
 
 import com.lily.cicd.config.DeployProperties;
+import com.lily.cicd.module.OnPremUpstream;
 import com.lily.cicd.release.DeployConflictException;
 import com.lily.cicd.release.DeployLock;
 import io.fabric8.kubernetes.api.model.Service;
@@ -23,6 +24,9 @@ import java.util.Map;
  * 배포된 앱의 활성 슬롯(blue-green) 상태 조회와 레플리카 조정, 중지·다시 시작·삭제.
  * 클라우드 버스팅에서 대기 슬롯을 0 으로 두었다가 부하가 오면 올리는 데 쓴다.
  * 새 배포를 하면 슬롯 레플리카는 다시 기본값으로 돌아간다 (중지한 앱도 다시 배포하면 뜬다).
+ *
+ * <p>{@code /upstream}: 클라우드 앱의 공개 주소는 두고 Ingress 가 온프레미스 공개 주소로 넘기게 하거나 되돌린다
+ * ({@link OnPremUpstream}). 클라우드 앱을 사용자 PC 로 옮길 때 쓴다.
  */
 @RestController
 @RequestMapping("/api/apps")
@@ -36,12 +40,56 @@ public class AppController {
     private final DeployProperties properties;
     private final DeployLock lock;
     private final AppRemover remover;
+    private final OnPremUpstream upstream;
 
     public AppController(KubernetesClient k8s, DeployProperties properties, DeployLock lock, AppRemover remover) {
         this.k8s = k8s;
         this.properties = properties;
         this.lock = lock;
         this.remover = remover;
+        this.upstream = new OnPremUpstream(k8s);
+    }
+
+    /** Ingress 가 지금 넘기는 온프레미스 호스트. 넘기지 않으면 upstream 이 null */
+    @GetMapping("/{appName}/upstream")
+    public ResponseEntity<Upstream> upstream(@PathVariable String appName,
+                                             @RequestParam(required = false) String namespace) {
+        return ResponseEntity.ok(new Upstream(appName, upstream.current(namespace(namespace), appName).orElse(null)));
+    }
+
+    /** 앱 Ingress 를 온프레미스 공개 주소로 넘긴다. Ingress 가 없으면 404, 배포·롤백 중이면 409 */
+    @PutMapping("/{appName}/upstream")
+    public ResponseEntity<Upstream> pointUpstream(@PathVariable String appName,
+                                                  @RequestParam(required = false) String namespace,
+                                                  @Valid @RequestBody UpstreamRequest request) {
+        String ns = namespace(namespace);
+        try (DeployLock.Handle ignored = lock.acquire(ns, appName, "upstream")) {
+            upstream.point(ns, appName, request.host());
+        } catch (IllegalStateException e) {
+            return ResponseEntity.notFound().build();
+        }
+        log.info("upstream app={} -> onprem {}", appName, request.host());
+        return ResponseEntity.ok(new Upstream(appName, upstream.current(ns, appName).orElse(null)));
+    }
+
+    /** 앱 Ingress 를 클러스터 Service 로 되돌린다. 넘기지 않았으면 그대로 200 */
+    @DeleteMapping("/{appName}/upstream")
+    public ResponseEntity<Upstream> restoreUpstream(@PathVariable String appName,
+                                                    @RequestParam(required = false) String namespace) {
+        String ns = namespace(namespace);
+        try (DeployLock.Handle ignored = lock.acquire(ns, appName, "upstream")) {
+            if (upstream.restore(ns, appName)) {
+                log.info("upstream app={} -> cluster", appName);
+            }
+        }
+        return ResponseEntity.ok(new Upstream(appName, null));
+    }
+
+    /** @param upstream 온프레미스 공개 호스트. 클러스터 Service 로 가면 null */
+    public record Upstream(String appName, String upstream) {
+    }
+
+    public record UpstreamRequest(@NotNull String host) {
     }
 
     @GetMapping("/{appName}")
