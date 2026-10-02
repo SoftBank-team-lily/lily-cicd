@@ -209,6 +209,11 @@ public class DeploymentEngine {
                 pgrollChange = migratePgroll(context, databaseEnv, pgrollSet, oldVersionLive, logs);
                 appEnv = PgrollSchema.appEnv(databaseEnv, pgrollChange.to());
             } else {
+                if (!scripts.isEmpty() && pgroll != null && "postgres".equals(command.database())
+                        && pgroll.latest(databaseEnv).isPresent()) {
+                    // 앱은 버전 스키마(뷰)로 붙어 있어서 public 에 바로 적용한 변경이 보이지 않는다
+                    throw new IllegalArgumentException("pgroll 로 관리하는 DB 다. SQL 마이그레이션 대신 db/pgroll 파일로 보내야 한다");
+                }
                 change = migrateSchema(context, databaseEnv, scripts, logs);
                 if (!scripts.isEmpty()) {
                     appEnv = new LinkedHashMap<>(databaseEnv);

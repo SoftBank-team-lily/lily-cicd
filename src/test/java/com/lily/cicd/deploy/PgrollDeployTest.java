@@ -144,6 +144,18 @@ class PgrollDeployTest {
     }
 
     @Test
+    void pgroll로_관리하던_DB에_SQL_마이그레이션을_보내면_400으로_거절하고_적용하지_않는다() {
+        when(migrator.latest(DB_ENV)).thenReturn(Optional.of("02_add_slug"));
+        SchemaMigrator flyway = mock(SchemaMigrator.class);
+
+        assertThrows(IllegalArgumentException.class, () -> engine(8, flyway).deploy(command(Map.of(
+                "V3__col.sql", "alter table posts add column x int;", "U3__col.sql", "alter table posts drop column x;"))));
+
+        verify(flyway, never()).migrate(any(), any(), anyList());
+        assertNull(deployment("lily-blue"));
+    }
+
+    @Test
     void pgroll_시작이_실패하면_슬롯을_만들지_않는다() {
         when(migrator.migrate(eq(DB_ENV), any(PgrollSet.class), anyBoolean(), anyList()))
                 .thenThrow(new SchemaOperationException("pgroll start 실패: lock timeout", null));
@@ -165,6 +177,10 @@ class PgrollDeployTest {
     }
 
     private DeploymentEngine engine(long readinessSeconds) {
+        return engine(readinessSeconds, mock(SchemaMigrator.class));
+    }
+
+    private DeploymentEngine engine(long readinessSeconds, SchemaMigrator flyway) {
         DeployProperties properties = new DeployProperties();
         properties.setReadinessTimeoutSeconds(readinessSeconds);
         properties.setReplicas(1);
@@ -184,7 +200,7 @@ class PgrollDeployTest {
         PgrollSchema pgroll = new PgrollSchema(migrator, database, releases, client, Duration.ofMinutes(10));
         return new DeploymentEngine(properties, new BlueGreenDeploymentStrategy(client, properties), database,
                 new NginxIngressRouter(client), new Slf4jDeployLog(), new NoopDeployMonitor(),
-                mock(SchemaMigrator.class), releases, new DeployLock(client), null, new DeployProgress(), null, pgroll);
+                flyway, releases, new DeployLock(client), null, new DeployProgress(), null, pgroll);
     }
 
     private static DeployCommand command(Map<String, String> migrations) {
