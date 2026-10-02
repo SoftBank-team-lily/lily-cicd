@@ -1,6 +1,9 @@
 package com.lily.cicd.deploy;
 
 import com.lily.cicd.config.DeployProperties;
+import com.lily.cicd.module.DeployContext;
+import com.lily.cicd.module.NginxIngressRouter;
+import com.lily.cicd.module.TrafficRouter;
 import com.lily.cicd.release.DeployConflictException;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
@@ -8,8 +11,6 @@ import io.fabric8.kubernetes.api.model.IntOrString;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServiceBuilder;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
-import io.fabric8.kubernetes.api.model.networking.v1.Ingress;
-import io.fabric8.kubernetes.api.model.networking.v1.IngressBuilder;
 import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientException;
@@ -40,10 +41,18 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
 
     private final KubernetesClient k8sClient;
     private final DeployProperties properties;
+    /** 가중치 입구(canary Ingress)는 Router 모듈이 연다. Service·Deployment 는 이 전략이 계속 관리한다 */
+    private final TrafficRouter router;
 
+    /** Ingress 를 직접 쓰는 기본 Router 로 */
     public CanaryDeploymentStrategy(KubernetesClient k8sClient, DeployProperties properties) {
+        this(k8sClient, properties, new NginxIngressRouter(k8sClient));
+    }
+
+    public CanaryDeploymentStrategy(KubernetesClient k8sClient, DeployProperties properties, TrafficRouter router) {
         this.k8sClient = k8sClient;
         this.properties = properties;
+        this.router = router;
     }
 
     @Override
@@ -194,7 +203,7 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
         String previousName = deploymentName(appName, plan.previous());
         String targetName = deploymentName(appName, plan.target());
         try {
-            deleteCanaryIngress(namespace, appName);
+            router.closeCanary(namespace, appName);
             k8sClient.services().inNamespace(namespace).withName(canaryServiceName(appName)).delete();
             k8sClient.apps().deployments().inNamespace(namespace).withName(targetName).delete();
             Deployment previous = k8sClient.apps().deployments().inNamespace(namespace).withName(previousName).get();
@@ -202,7 +211,8 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
                 scale(namespace, previousName, replicas());
             }
             logs.add("canary: restored " + previousName + " replicas=" + replicas());
-        } catch (KubernetesClientException e) {
+        } catch (RuntimeException e) {
+            // k8s API 실패와 Router 모듈(HTTP) 실패 모두. 되돌리기 실패는 기록만 하고 원래 예외를 살린다
             log.error("failed to restore previous track. namespace={} name={} message={}",
                     namespace, previousName, e.getMessage(), e);
             logs.add("canary: restore failed " + previousName + " — " + e.getMessage());
@@ -402,41 +412,29 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
 
     /** ingress-nginx 가 같은 호스트의 본 Ingress 와 짝을 이룬다. weight 0 은 새 슬롯으로 보내지 않는다. */
     private void putWeight(DeployCommand command, String namespace, int weight) {
-        String name = canaryIngressName(command.appName());
-        Map<String, String> annotations = new LinkedHashMap<>();
-        annotations.put("kubernetes.io/ingress.class", "nginx");
-        annotations.put("nginx.ingress.kubernetes.io/canary", "true");
-        annotations.put("nginx.ingress.kubernetes.io/canary-weight", Integer.toString(weight));
-        Ingress ingress = new IngressBuilder()
-                .withNewMetadata()
-                    .withName(name)
-                    .withNamespace(namespace)
-                    .withAnnotations(annotations)
-                .endMetadata()
-                .withNewSpec()
-                    .withIngressClassName("nginx")
-                    .addNewRule()
-                        .withHost(host(command))
-                        .withNewHttp()
-                            .addNewPath()
-                                .withPath("/")
-                                .withPathType("Prefix")
-                                .withNewBackend()
-                                    .withNewService()
-                                        .withName(canaryServiceName(command.appName()))
-                                        .withNewPort().withNumber(SERVICE_PORT).endPort()
-                                    .endService()
-                                .endBackend()
-                            .endPath()
-                        .endHttp()
-                    .endRule()
-                .endSpec()
-                .build();
-        k8sClient.network().v1().ingresses().inNamespace(namespace).resource(ingress).createOrReplace();
+        router.openCanary(routerContext(command, namespace), canaryServiceName(command.appName()), weight);
     }
 
     private void deleteCanaryIngress(String namespace, String appName) {
-        k8sClient.network().v1().ingresses().inNamespace(namespace).withName(canaryIngressName(appName)).delete();
+        router.closeCanary(namespace, appName);
+    }
+
+    /**
+     * Router 모듈에 넘길 값. canary 입구는 이번 배포의 host 로 열고,
+     * 라우트가 아직 없으면 Router 가 본 Service({@code {app}-svc}) 로 먼저 등록한다
+     */
+    private DeployContext routerContext(DeployCommand command, String namespace) {
+        return new DeployContext(
+                command.appName(),
+                namespace,
+                command.imageUrl(),
+                command.targetPort(),
+                SERVICE_PORT,
+                host(command),
+                firstNonBlank(command.appVersion(), "dev"),
+                null,
+                serviceName(command.appName()),
+                DeploymentEngine.METRICS_PATH);
     }
 
     private String host(DeployCommand command) {
@@ -573,10 +571,6 @@ public class CanaryDeploymentStrategy implements DeploymentStrategy {
 
     private static String canaryServiceName(String appName) {
         return appName + "-canary-svc";
-    }
-
-    private static String canaryIngressName(String appName) {
-        return appName + "-canary-ingress";
     }
 
     private static String firstNonBlank(String preferred, String fallback) {

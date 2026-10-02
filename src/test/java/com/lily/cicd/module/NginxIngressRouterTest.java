@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NginxIngressRouterTest {
@@ -75,5 +77,54 @@ class NginxIngressRouterTest {
                 .getHttp().getPaths().get(0).getBackend().getService().getName());
         assertEquals("extra-tls", ingress.getSpec().getTls().get(0).getSecretName());
         assertTrue(ingress.getMetadata().getAnnotations().containsKey("kubernetes.io/ingress.class"));
+    }
+
+    @Test
+    void canary_입구를_같은_호출로_비율만_바꾸고_닫는다() {
+        NginxIngressRouter router = new NginxIngressRouter(client);
+        DeployContext context = context("blog.lilycloud.kr");
+
+        router.openCanary(context, "blog-canary-svc", 0);
+        router.openCanary(context, "blog-canary-svc", 40);
+
+        Ingress canary = client.network().v1().ingresses().inNamespace("default").withName("blog-canary-ingress").get();
+        assertEquals("true", canary.getMetadata().getAnnotations().get("nginx.ingress.kubernetes.io/canary"));
+        assertEquals("40", canary.getMetadata().getAnnotations().get("nginx.ingress.kubernetes.io/canary-weight"));
+        assertEquals("blog.lilycloud.kr", canary.getSpec().getRules().get(0).getHost());
+        assertEquals("blog-canary-svc", canary.getSpec().getRules().get(0).getHttp().getPaths().get(0)
+                .getBackend().getService().getName());
+        assertEquals(List.of(new TrafficRouter.AppRef("default", "blog")), router.openCanaries());
+
+        router.closeCanary("default", "blog");
+        router.closeCanary("default", "blog");
+
+        assertNull(client.network().v1().ingresses().inNamespace("default").withName("blog-canary-ingress").get());
+        assertEquals(List.of(), router.openCanaries());
+    }
+
+    @Test
+    void routes_는_본_Ingress_에_그_호스트가_있는지_본다() {
+        NginxIngressRouter router = new NginxIngressRouter(client);
+        assertFalse(router.routes("default", "blog", "blog.lilycloud.kr"));
+
+        router.route(context("blog.lilycloud.kr"));
+
+        assertTrue(router.routes("default", "blog", "blog.lilycloud.kr"));
+        assertFalse(router.routes("default", "blog", "other.lilycloud.kr"));
+    }
+
+    @Test
+    void remove_는_본_Ingress_와_canary_를_지우고_지운_이름을_돌려준다() {
+        NginxIngressRouter router = new NginxIngressRouter(client);
+        router.route(context("blog.lilycloud.kr"));
+        router.openCanary(context("blog.lilycloud.kr"), "blog-canary-svc", 10);
+
+        assertEquals(List.of("ingress/blog-ingress", "ingress/blog-canary-ingress"), router.remove("default", "blog"));
+        assertEquals(List.of(), router.remove("default", "blog"));
+    }
+
+    private static DeployContext context(String host) {
+        return new DeployContext("blog", "default", "image:2", 8080, 80, host, "2",
+                "green", "blog-svc", "/actuator/prometheus");
     }
 }

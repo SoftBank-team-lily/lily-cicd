@@ -32,13 +32,14 @@ public class ModuleConfiguration {
 
     @Bean
     @ConditionalOnMissingBean(DeploymentStrategy.class)
-    public DeploymentStrategy deploymentStrategy(KubernetesClient kubernetesClient, DeployProperties properties) {
+    public DeploymentStrategy deploymentStrategy(KubernetesClient kubernetesClient, DeployProperties properties,
+                                                 TrafficRouter trafficRouter) {
         String name = properties.getStrategy() == null ? "" : properties.getStrategy().trim();
         if (name.isEmpty() || "blue-green".equals(name)) {
             return new BlueGreenDeploymentStrategy(kubernetesClient, properties);
         }
         if ("canary".equals(name)) {
-            return new CanaryDeploymentStrategy(kubernetesClient, properties);
+            return new CanaryDeploymentStrategy(kubernetesClient, properties, trafficRouter);
         }
         throw new IllegalArgumentException(
                 "lily.deploy.strategy 는 blue-green 또는 canary 여야 한다: " + name);
@@ -46,8 +47,9 @@ public class ModuleConfiguration {
 
     @Bean
     @ConditionalOnMissingBean(CanaryAnalysis.class)
-    public CanaryAnalysis canaryAnalysis(KubernetesClient kubernetesClient, DeployProperties properties) {
-        return new CanaryAnalysis(kubernetesClient, properties);
+    public CanaryAnalysis canaryAnalysis(KubernetesClient kubernetesClient, DeployProperties properties,
+                                         TrafficRouter trafficRouter) {
+        return new CanaryAnalysis(kubernetesClient, properties, trafficRouter);
     }
 
     @Bean
@@ -92,15 +94,16 @@ public class ModuleConfiguration {
 
     @Bean
     public AppRemover appRemover(KubernetesClient kubernetesClient, DeployLock deployLock, DeployProgress progress,
-                                 DatabaseProvisioner databaseProvisioner) {
-        return new AppRemover(kubernetesClient, deployLock, progress, databaseProvisioner);
+                                 DatabaseProvisioner databaseProvisioner, TrafficRouter trafficRouter) {
+        return new AppRemover(kubernetesClient, deployLock, progress, databaseProvisioner, trafficRouter);
     }
 
     @Bean
     public DeployRecovery deployRecovery(KubernetesClient kubernetesClient, SchemaMigrator schemaMigrator,
                                          DatabaseProvisioner databaseProvisioner, ReleaseStore releaseStore,
-                                         DeployProgress progress) {
-        return new DeployRecovery(kubernetesClient, schemaMigrator, databaseProvisioner, releaseStore, progress);
+                                         DeployProgress progress, TrafficRouter trafficRouter) {
+        return new DeployRecovery(kubernetesClient, schemaMigrator, databaseProvisioner, releaseStore, progress,
+                trafficRouter);
     }
 
     /** 죽은 배포의 canary 와, 트래픽을 옮기기 전에 적용된 스키마를 정리한다 */

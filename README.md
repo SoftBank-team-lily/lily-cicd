@@ -292,6 +292,23 @@ Deployment 생성 이전에 실행됩니다.
 
 실패하더라도 배포는 유지됩니다.
 
+트래픽 입구(Ingress)는 모두 `TrafficRouter` 뒤에서만 바뀝니다.
+
+| 메서드 | 쓰는 곳 | 하는 일 |
+|---|---|---|
+| `route` | `DeploymentEngine` (전환 직후) | `{app}-ingress` 에 이번 host 규칙 반영 |
+| `openCanary` / `closeCanary` | `CanaryDeploymentStrategy`, `CanaryAnalysis`, `DeployRecovery` | `{app}-canary-ingress` 가중치 0~100, 정리 |
+| `routes` | `CanaryAnalysis` (판정 전) | 이 host 로 이미 라우팅되는지 |
+| `openCanaries` | `DeployRecovery` (재시작) | canary 입구가 남은 앱 |
+| `remove` | `AppRemover` | 앱의 라우트와 canary 입구 삭제 |
+
+| 구현 | 켜지는 조건 | 동작 |
+|---|---|---|
+| `NginxIngressRouter` | 기본 | cicd 가 Ingress 를 직접 쓴다 |
+| `HttpTrafficRouter` | `lily.router.url` (`LILY_ROUTER_URL`) 이 있을 때 | [lily-router](https://github.com/SoftBank-team-lily/lily-ingress-nginx) 에 HTTP 로 요청한다. 연결 실패·5xx 는 3번까지 다시 보낸다 |
+
+`LILY_ROUTER_URL` 을 빼면 바로 기본 구현으로 돌아갑니다. 설정 예시는 `deploy/k3s/lily-cicd.yaml` 주석에 있습니다.
+
 ### Monitoring Module
 
 Router 적용 이후 실행됩니다.

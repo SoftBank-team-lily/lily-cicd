@@ -3,6 +3,8 @@ package com.lily.cicd.deploy;
 import com.lily.cicd.module.DatabaseProvisioner;
 import com.lily.cicd.module.DeployContext;
 import com.lily.cicd.module.DeployStages;
+import com.lily.cicd.module.NginxIngressRouter;
+import com.lily.cicd.module.TrafficRouter;
 import com.lily.cicd.release.ReleaseStore;
 import com.lily.cicd.schema.MigrationSet;
 import com.lily.cicd.schema.SchemaMigrator;
@@ -36,7 +38,6 @@ public class DeployRecovery {
     /** 진행 맥박(5초)이 이 시간 동안 없으면 배포 스레드가 죽은 것으로 본다 */
     static final Duration STALE = Duration.ofSeconds(20);
     private static final Logger log = LoggerFactory.getLogger(DeployRecovery.class);
-    private static final String CANARY_INGRESS = "-canary-ingress";
     private static final String CANARY_SERVICE = "-canary-svc";
 
     private final KubernetesClient k8s;
@@ -44,11 +45,21 @@ public class DeployRecovery {
     private final DatabaseProvisioner databaseProvisioner;
     private final ReleaseStore releaseStore;
     private final DeployProgress progress;
+    /** 남은 canary 입구(Ingress)는 Router 모듈에 묻고 닫는다. canary Service 는 여기서 직접 지운다 */
+    private final TrafficRouter router;
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicBoolean stopped = new AtomicBoolean();
 
+    /** Ingress 를 직접 쓰는 기본 Router 로 */
     public DeployRecovery(KubernetesClient k8s, SchemaMigrator schemaMigrator, DatabaseProvisioner databaseProvisioner,
                           ReleaseStore releaseStore, DeployProgress progress) {
+        this(k8s, schemaMigrator, databaseProvisioner, releaseStore, progress,
+                k8s == null ? null : new NginxIngressRouter(k8s));
+    }
+
+    public DeployRecovery(KubernetesClient k8s, SchemaMigrator schemaMigrator, DatabaseProvisioner databaseProvisioner,
+                          ReleaseStore releaseStore, DeployProgress progress, TrafficRouter router) {
+        this.router = router;
         this.k8s = k8s;
         this.schemaMigrator = schemaMigrator;
         this.databaseProvisioner = databaseProvisioner;
@@ -132,12 +143,16 @@ public class DeployRecovery {
     }
 
     private void sweepCanaries() {
-        k8s.network().v1().ingresses().inAnyNamespace().list().getItems().forEach(ingress -> {
-            String app = strip(ingress.getMetadata().getName(), CANARY_INGRESS);
-            if (app != null && !live(ingress.getMetadata().getNamespace(), app)) {
-                deleteCanary(ingress.getMetadata().getNamespace(), app);
-            }
-        });
+        try {
+            router.openCanaries().forEach(ref -> {
+                if (!live(ref.namespace(), ref.appName())) {
+                    deleteCanary(ref.namespace(), ref.appName());
+                }
+            });
+        } catch (RuntimeException e) {
+            // Router 모듈이 아직 안 떠 있어도 아래 Service 정리와 스키마 복구는 한다
+            log.warn("canary entry sweep failed. message={}", e.getMessage());
+        }
         k8s.services().inAnyNamespace().list().getItems().forEach(service -> {
             String app = strip(service.getMetadata().getName(), CANARY_SERVICE);
             if (app != null && !live(service.getMetadata().getNamespace(), app)) {
@@ -190,7 +205,11 @@ public class DeployRecovery {
 
     private void deleteCanary(String namespace, String app) {
         try {
-            k8s.network().v1().ingresses().inNamespace(namespace).withName(app + CANARY_INGRESS).delete();
+            router.closeCanary(namespace, app);
+        } catch (RuntimeException e) {
+            log.warn("canary entry close failed. app={} message={}", app, e.getMessage());
+        }
+        try {
             k8s.services().inNamespace(namespace).withName(app + CANARY_SERVICE).delete();
         } catch (RuntimeException e) {
             log.warn("canary sweep failed. app={} message={}", app, e.getMessage());
