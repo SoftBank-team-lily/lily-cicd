@@ -76,4 +76,22 @@ class NginxIngressRouterTest {
         assertEquals("extra-tls", ingress.getSpec().getTls().get(0).getSecretName());
         assertTrue(ingress.getMetadata().getAnnotations().containsKey("kubernetes.io/ingress.class"));
     }
+
+    @Test
+    void 별칭_호스트도_같은_Service_로_보낸다() {
+        new NginxIngressRouter(client).route(new DeployContext(
+                "shop", "default", "image:1", 8080, 80, "shop.lilycloud.kr", "1",
+                "blue", "shop-svc", "/actuator/prometheus", null, List.of("shop-cloud.lilycloud.kr")));
+        // 별칭 없이 다시 배포해도 별칭 규칙은 남는다
+        new NginxIngressRouter(client).route(new DeployContext(
+                "shop", "default", "image:2", 8080, 80, "shop.lilycloud.kr", "2",
+                "green", "shop-svc", "/actuator/prometheus"));
+
+        Ingress ingress = client.network().v1().ingresses().inNamespace("default").withName("shop-ingress").get();
+        List<String> hosts = ingress.getSpec().getRules().stream().map(rule -> rule.getHost()).toList();
+        assertEquals(2, hosts.size());
+        assertTrue(hosts.containsAll(List.of("shop.lilycloud.kr", "shop-cloud.lilycloud.kr")));
+        ingress.getSpec().getRules().forEach(rule -> assertEquals("shop-svc",
+                rule.getHttp().getPaths().get(0).getBackend().getService().getName()));
+    }
 }
