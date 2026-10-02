@@ -232,6 +232,7 @@ DB, Router, Logging, Monitoring 모듈은 배포 절차를 직접 알 필요 없
 | `targetPort`  | 컨테이너 포트              |
 | `servicePort` | Service 포트           |
 | `host`        | 서비스 도메인              |
+| `aliases`     | 같은 Service 로 보내는 추가 호스트 (없으면 빈 목록) |
 | `appVersion`  | 애플리케이션 버전            |
 | `targetColor` | 배포 대상 슬롯             |
 | `serviceName` | Service 이름           |
@@ -289,6 +290,8 @@ Deployment 생성 이전에 실행됩니다.
 
 * Ingress 이름: `{appName}-ingress`
 * Ingress Class: `nginx`
+* 이번 배포의 `host` 규칙과 `aliases` 규칙만 바꾸고, 다른 호스트 규칙과 TLS 는 남깁니다. 이번 배포에 없는 별칭 규칙도 지우지 않습니다
+* `aliases` 는 배포 요청(`POST /api/deployments`)의 선택 필드입니다. lily-builder 가 온프레미스 앱의 대기 배포에 `{appName}-cloud.{존}` 을 넣어, 엣지 Worker 가 PC 장애 때 요청을 클라우드로 다시 보낼 주소로 씁니다
 
 실패하더라도 배포는 유지됩니다.
 
