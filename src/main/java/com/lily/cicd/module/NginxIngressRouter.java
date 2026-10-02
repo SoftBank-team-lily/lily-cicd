@@ -9,14 +9,17 @@ import io.fabric8.kubernetes.client.KubernetesClient;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Nginx Ingress 로 {@code {appName}-ingress} 를 Service 80 에 연결한다.
  *
  * <p>이미 있는 Ingress 는 통째로 갈아끼우지 않는다. 이 배포의 호스트 규칙만 넣고,
  * 다른 호스트(로드밸런서에서 추가한 nip.io 등)와 TLS 는 그대로 둔다.
+ * 추가 호스트({@link DeployContext#aliases()})도 같은 Service 로 넣는다. 이번 배포에 없는 별칭 규칙은 지우지 않는다.
  */
 public final class NginxIngressRouter implements TrafficRouter {
 
@@ -40,15 +43,20 @@ public final class NginxIngressRouter implements TrafficRouter {
         }
         annotations.put("kubernetes.io/ingress.class", "nginx");
 
+        Set<String> hosts = new LinkedHashSet<>();
+        hosts.add(context.host());
+        hosts.addAll(context.aliases());
         List<IngressRule> rules = new ArrayList<>();
         if (existing != null && existing.getSpec() != null && existing.getSpec().getRules() != null) {
             for (IngressRule rule : existing.getSpec().getRules()) {
-                if (rule.getHost() == null || !rule.getHost().equals(context.host())) {
+                if (rule.getHost() == null || !hosts.contains(rule.getHost())) {
                     rules.add(rule);
                 }
             }
         }
-        rules.add(rule(context));
+        for (String host : hosts) {
+            rules.add(rule(host, context));
+        }
 
         List<IngressTLS> tls = existing != null && existing.getSpec() != null && existing.getSpec().getTls() != null
                 ? existing.getSpec().getTls() : List.of();
@@ -71,9 +79,9 @@ public final class NginxIngressRouter implements TrafficRouter {
                 .createOrReplace();
     }
 
-    private static IngressRule rule(DeployContext context) {
+    private static IngressRule rule(String host, DeployContext context) {
         return new IngressRuleBuilder()
-                .withHost(context.host())
+                .withHost(host)
                 .withNewHttp()
                     .addNewPath()
                         .withPath("/")

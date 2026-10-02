@@ -151,7 +151,8 @@ public class DeploymentEngine {
                 null,
                 serviceName(appName),
                 METRICS_PATH,
-                command.database());
+                command.database(),
+                command.aliases());
 
         try (DeployLock.Handle lock = deployLock.acquire(namespace, appName, "deploy")) {
             try (DeployLock.Beat beat = lock.heartbeat();
@@ -372,7 +373,8 @@ public class DeploymentEngine {
                 command.host(),
                 command.migrations(),
                 command.canaryPath(),
-                command.databaseEnv());
+                command.databaseEnv(),
+                command.aliases());
     }
 
     private void validate(DeployCommand command) {

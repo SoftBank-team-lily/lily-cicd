@@ -1,5 +1,6 @@
 package com.lily.cicd.deploy;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -18,6 +19,7 @@ import java.util.Map;
  * @param canaryPath       canary 판정 때 새 버전과 이전 버전에 보낼 경로. null 이면 readiness 경로. docs/canary-analysis.md
  * @param databaseEnv      DB 접속 환경변수를 호출자가 정해 보낸다 (온프레미스 DB 를 역방향 터널로 쓰는 클라우드 대기 배포).
  *                         비어 있지 않으면 DB 모듈을 부르지 않고 이 값을 슬롯 Secret 에 넣는다. database 와 같이 보내지 않는다
+ * @param aliases          host 와 같은 Service 로 보내는 추가 Ingress 호스트. 비어 있으면 없다
  */
 public record DeployCommand(
         String appName,
@@ -34,8 +36,23 @@ public record DeployCommand(
         String host,
         Map<String, String> migrations,
         String canaryPath,
-        Map<String, String> databaseEnv
+        Map<String, String> databaseEnv,
+        List<String> aliases
 ) {
+    public DeployCommand {
+        aliases = aliases == null ? List.of() : List.copyOf(aliases);
+    }
+
+    /** 추가 호스트 없이 배포 */
+    public DeployCommand(
+            String appName, String imageUrl, int targetPort, String namespace, String domain,
+            String readinessPath, String livenessPath, String appVersion, String imagePullSecret,
+            Map<String, String> extraEnv, String database, String host, Map<String, String> migrations,
+            String canaryPath, Map<String, String> databaseEnv) {
+        this(appName, imageUrl, targetPort, namespace, domain, readinessPath, livenessPath,
+                appVersion, imagePullSecret, extraEnv, database, host, migrations, canaryPath, databaseEnv, null);
+    }
+
     /** DB 접속 정보는 DB 모듈이 정한다 */
     public DeployCommand(
             String appName, String imageUrl, int targetPort, String namespace, String domain,
