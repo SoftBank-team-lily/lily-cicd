@@ -7,6 +7,8 @@ import com.lily.cicd.deploy.CanaryDeploymentStrategy;
 import com.lily.cicd.deploy.DeployProgress;
 import com.lily.cicd.deploy.DeployRecovery;
 import com.lily.cicd.deploy.DeploymentStrategy;
+import com.lily.cicd.deploy.PgrollCompleter;
+import com.lily.cicd.deploy.PgrollSchema;
 import com.lily.cicd.module.DatabaseProvisioner;
 import com.lily.cicd.module.DeployLog;
 import com.lily.cicd.module.DeployMonitor;
@@ -17,17 +19,23 @@ import com.lily.cicd.module.Slf4jDeployLog;
 import com.lily.cicd.module.TrafficRouter;
 import com.lily.cicd.release.DeployLock;
 import com.lily.cicd.release.ReleaseStore;
+import com.lily.cicd.schema.PgrollCli;
+import com.lily.cicd.schema.PgrollMigrator;
 import com.lily.cicd.schema.SchemaMigrator;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.time.Duration;
 
 /**
  * 팀원 모듈이 같은 타입의 빈을 등록하면 여기 기본 구현은 빠진다.
  */
 @Configuration
+@EnableConfigurationProperties(PgrollProperties.class)
 public class ModuleConfiguration {
 
     @Bean
@@ -99,8 +107,31 @@ public class ModuleConfiguration {
     @Bean
     public DeployRecovery deployRecovery(KubernetesClient kubernetesClient, SchemaMigrator schemaMigrator,
                                          DatabaseProvisioner databaseProvisioner, ReleaseStore releaseStore,
-                                         DeployProgress progress) {
-        return new DeployRecovery(kubernetesClient, schemaMigrator, databaseProvisioner, releaseStore, progress);
+                                         DeployProgress progress, PgrollSchema pgrollSchema) {
+        return new DeployRecovery(kubernetesClient, schemaMigrator, databaseProvisioner, releaseStore, progress,
+                pgrollSchema);
+    }
+
+    /** 무중단 스키마 변경. docs/schema-migration.md 7 절 */
+    @Bean
+    public PgrollSchema pgrollSchema(PgrollProperties pgroll, DatabaseProvisioner databaseProvisioner,
+                                     ReleaseStore releaseStore, KubernetesClient kubernetesClient) {
+        return new PgrollSchema(new PgrollMigrator(new PgrollCli(pgroll.cli())), databaseProvisioner, releaseStore,
+                kubernetesClient, Duration.ofSeconds(pgroll.rollbackWindowSeconds()));
+    }
+
+    @Bean
+    public PgrollCompleter pgrollCompleter(PgrollSchema pgrollSchema, PgrollProperties pgroll,
+                                           DatabaseProvisioner databaseProvisioner, ReleaseStore releaseStore,
+                                           DeployLock deployLock) {
+        return new PgrollCompleter(pgrollSchema, databaseProvisioner, releaseStore, deployLock,
+                Duration.ofSeconds(pgroll.completerIntervalSeconds()));
+    }
+
+    /** 롤백 창이 지난 pgroll 마이그레이션을 complete 한다 */
+    @Bean
+    public ApplicationRunner completeExpiredPgroll(PgrollCompleter completer) {
+        return args -> completer.start();
     }
 
     /** 죽은 배포의 canary 와, 트래픽을 옮기기 전에 적용된 스키마를 정리한다 */

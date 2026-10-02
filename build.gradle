@@ -42,9 +42,37 @@ jacoco {
     toolVersion = '0.8.12'
 }
 
+// pgroll 테스트는 실제 CLI 를 Testcontainers PostgreSQL 에 돌린다. Dockerfile 과 같은 버전·체크섬
+def pgrollVersion = '0.16.3'
+def pgrollSums = [
+        amd64: 'e86ccd704f7d99a0794a75a6c1d1095d30c8bc8c21a22b793914db8340bad182',
+        arm64: 'c37f41f29b8e5784a47f91069975bd397448cf1014d47cd426680f18a84804a7']
+def pgrollBinary = layout.buildDirectory.file("pgroll/pgroll-${pgrollVersion}")
+
+tasks.register('downloadPgroll') {
+    description = 'pgroll CLI (linux) 를 받아 체크섬을 확인한다. 다른 OS 에서는 건너뛰고 pgroll 테스트도 건너뛴다.'
+    onlyIf { org.gradle.internal.os.OperatingSystem.current().isLinux() }
+    outputs.file(pgrollBinary)
+    doLast {
+        def arch = System.getProperty('os.arch') in ['aarch64', 'arm64'] ? 'arm64' : 'amd64'
+        def target = pgrollBinary.get().asFile
+        target.parentFile.mkdirs()
+        new URL("https://github.com/xataio/pgroll/releases/download/v${pgrollVersion}/pgroll.linux.${arch}")
+                .withInputStream { input -> target.withOutputStream { it << input } }
+        def digest = java.security.MessageDigest.getInstance('SHA-256').digest(target.bytes).encodeHex().toString()
+        if (digest != pgrollSums[arch]) {
+            target.delete()
+            throw new GradleException("pgroll 체크섬이 다르다: ${digest}")
+        }
+        target.setExecutable(true)
+    }
+}
+
 tasks.named('test') {
     useJUnitPlatform()
     finalizedBy tasks.named('jacocoTestReport')
+    dependsOn tasks.named('downloadPgroll')
+    systemProperty 'pgroll.binary', pgrollBinary.get().asFile.absolutePath
     // Docker Desktop 은 npipe docker_engine 이 아니라 dockerDesktopLinuxEngine 을 쓴다.
     // 비어 있으면 Testcontainers 가 Docker 를 못 찾고 DB 테스트를 건너뛴다.
     def dockerHost = System.getenv('DOCKER_HOST')

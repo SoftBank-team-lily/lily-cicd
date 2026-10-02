@@ -20,9 +20,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
@@ -52,6 +54,8 @@ public class RollbackEngine {
     private final ReleaseStore releaseStore;
     private final DeployLock deployLock;
     private final StageRecorder recorder;
+    /** null 이면 pgroll 릴리스의 스키마는 되돌리지 않는다 */
+    private final PgrollSchema pgroll;
 
     public RollbackEngine(
             DeployProperties properties,
@@ -62,6 +66,22 @@ public class RollbackEngine {
             SchemaMigrator schemaMigrator,
             ReleaseStore releaseStore,
             DeployLock deployLock) {
+        this(properties, strategy, databaseProvisioner, deployLog, deployMonitor, schemaMigrator, releaseStore,
+                deployLock, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RollbackEngine(
+            DeployProperties properties,
+            DeploymentStrategy strategy,
+            DatabaseProvisioner databaseProvisioner,
+            DeployLog deployLog,
+            DeployMonitor deployMonitor,
+            SchemaMigrator schemaMigrator,
+            ReleaseStore releaseStore,
+            DeployLock deployLock,
+            PgrollSchema pgroll) {
+        this.pgroll = pgroll;
         this.properties = properties;
         this.strategy = strategy;
         this.databaseProvisioner = databaseProvisioner;
@@ -128,8 +148,11 @@ public class RollbackEngine {
             Release previous = releaseStore.read(ns, appName, plan.target())
                     .orElseThrow(() -> new DeployConflictException("이전 슬롯이 없다: " + plan.target(), logs));
 
+            if (pgrollSchemaChanged(current, previous)) {
+                return rollbackPgroll(context, ns, appName, plan, current, previous, appOnly, host, logs);
+            }
             SchemaTarget schema = null;
-            if (!appOnly && current.schemaManaged()) {
+            if (!appOnly && current.schemaManaged() && !current.pgroll()) {
                 context = withDatabase(context, current.database());
                 Map<String, String> databaseEnv = prepareDatabase(context, logs);
                 schema = new SchemaTarget(databaseEnv, releaseStore.loadScripts(ns, appName, plan.previous()),
@@ -182,13 +205,14 @@ public class RollbackEngine {
      */
     private Optional<String> blocker(String ns, String appName, SlotPlan plan, Release current, Release previous,
                                      boolean includeSchema, SchemaTarget schema) {
-        if (current.deployedAt() == null || previous.deployedAt() == null) {
-            return Optional.of("배포 시각 기록이 없는 슬롯이다 (이 기능 이전 배포)");
+        Optional<String> order = orderBlocker(current, previous);
+        if (order.isPresent()) {
+            return order;
         }
-        if (!previous.deployedAt().isBefore(current.deployedAt())) {
-            return Optional.of(previous.slot() + " 가 " + current.slot() + " 보다 최신이다. 이미 롤백한 상태다");
+        if (pgrollSchemaChanged(current, previous)) {
+            return pgrollBlocker(current, includeSchema, null);
         }
-        if (!includeSchema || !current.schemaManaged()) {
+        if (!includeSchema || !current.schemaManaged() || current.pgroll()) {
             return Optional.empty();
         }
         if (!previous.schemaManaged()) {
@@ -212,6 +236,94 @@ public class RollbackEngine {
                     .toList();
         }
         return scripts.undoBlocker(versions).map(reason -> reason + ". appOnly=true 로 앱만 되돌릴 수 있다");
+    }
+
+    /** 되살릴 슬롯이 지금 슬롯보다 먼저 배포된 것이어야 한다 */
+    private static Optional<String> orderBlocker(Release current, Release previous) {
+        if (current.deployedAt() == null || previous.deployedAt() == null) {
+            return Optional.of("배포 시각 기록이 없는 슬롯이다 (이 기능 이전 배포)");
+        }
+        if (!previous.deployedAt().isBefore(current.deployedAt())) {
+            return Optional.of(previous.slot() + " 가 " + current.slot() + " 보다 최신이다. 이미 롤백한 상태다");
+        }
+        return Optional.empty();
+    }
+
+    /** 현재 릴리스가 pgroll 마이그레이션을 새로 적용한 릴리스다 (코드만 바뀐 릴리스가 아니다) */
+    private static boolean pgrollSchemaChanged(Release current, Release previous) {
+        return current.pgroll() && !Objects.equals(current.schemaVersion(), previous.schemaVersion());
+    }
+
+    /**
+     * pgroll 릴리스는 롤백 창 안(마이그레이션이 complete 전)에서만 되돌린다. 이전 버전 스키마가 그때까지만 있다.
+     *
+     * @param active DB 에서 읽은 진행 중 마이그레이션. null 이면 어노테이션으로 판단한다 (status 조회)
+     */
+    private Optional<String> pgrollBlocker(Release current, boolean includeSchema, Optional<String> active) {
+        if (!includeSchema) {
+            return Optional.of("pgroll 마이그레이션을 적용한 릴리스는 앱만 되돌릴 수 없다 (이전 버전이 쓰는 스키마를 같이 되돌린다)");
+        }
+        if (pgroll == null) {
+            return Optional.of("이 lily-cicd 는 pgroll 을 쓰지 않는다");
+        }
+        boolean open = active == null
+                ? PgrollSchema.ACTIVE.equals(current.pgrollState())
+                : active.filter(current.schemaVersion()::equals).isPresent();
+        if (!open) {
+            return Optional.of("롤백 창이 지나 pgroll " + current.schemaVersion()
+                    + " 이 complete 됐다. 이전 버전 스키마가 없다");
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * 이전 슬롯 1 → Ready → selector 전환 → 현재 슬롯 0 → Pod 종료 대기 → pgroll rollback.
+     * 그동안 새 버전이 쓴 값은 down 트리거로 옛 컬럼에 이미 들어가 있어서 잃는 행이 없다.
+     */
+    private DeploymentResultDto rollbackPgroll(DeployContext context, String ns, String appName, SlotPlan plan,
+                                              Release current, Release previous, boolean appOnly, String host,
+                                              List<String> logs) {
+        Map<String, String> databaseEnv = Map.of();
+        Optional<String> blocked = orderBlocker(current, previous);
+        if (blocked.isEmpty()) {
+            if (appOnly || pgroll == null) {
+                blocked = pgrollBlocker(current, !appOnly, null);
+            } else {
+                context = withDatabase(context, current.database());
+                databaseEnv = prepareDatabase(context, logs);
+                blocked = pgrollBlocker(current, true, pgroll.active(databaseEnv));
+            }
+        }
+        if (blocked.isPresent()) {
+            logs.add("rollback: refused — " + blocked.get());
+            throw new DeployConflictException("롤백할 수 없다: " + blocked.get(), logs);
+        }
+        recorder.record(context, logs, DeployStages.ROLLBACK, "rollback: precheck ok "
+                + current.slot() + "(pgroll " + current.schemaVersion() + ") -> "
+                + previous.slot() + "(" + previous.schemaVersion() + ")");
+
+        strategy.restorePrevious(ns, appName, plan, logs);
+        recorder.record(context, logs, DeployStages.SERVICE, last(logs));
+        strategy.retirePrevious(ns, appName, plan, logs);
+        recorder.record(context, logs, DeployStages.SCALE_DOWN, last(logs));
+        pgroll.awaitNoPods(ns, ReleaseStore.deploymentName(appName, plan.previous()), Duration.ofSeconds(90), logs);
+
+        String status = "ROLLED_BACK";
+        String schemaVersion = previous.schemaVersion();
+        try {
+            pgroll.rollback(databaseEnv, current.schemaVersion(), logs);
+            releaseStore.markPgroll(ns, appName, plan.previous(), PgrollSchema.ROLLED_BACK, null);
+            recorder.record(context, logs, DeployStages.MIGRATION, last(logs));
+        } catch (RuntimeException e) {
+            log.error("pgroll rollback failed after traffic switch. app={} message={}", appName, e.getMessage(), e);
+            status = "PARTIAL";
+            schemaVersion = current.schemaVersion();
+            recorder.record(context, logs, DeployStages.MIGRATION,
+                    "schema: pgroll rollback 실패, 앱 롤백은 유지 — " + e.getMessage());
+        }
+        recorder.record(context, logs, DeployStages.SUCCEEDED,
+                "rollback complete. active=" + plan.target() + " status=" + status);
+        return new DeploymentResultDto(status, plan.target(), "http://" + host, schemaVersion, List.copyOf(logs));
     }
 
     private Map<String, String> prepareDatabase(DeployContext context, List<String> logs) {

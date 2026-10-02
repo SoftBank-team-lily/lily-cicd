@@ -47,3 +47,16 @@ lily:
       max-p95-ratio: 2.0
       min-p95-regression-millis: 100
       min-samples: 20
+  # 무중단 스키마 변경 (앱 레포 db/pgroll/*.yaml). docs/schema-migration.md 7 절
+  schema:
+    pgroll:
+      binary: pgroll
+      # RDS 는 require, 로컬 Postgres 컨테이너는 disable
+      sslmode: ${PGROLL_SSLMODE:require}
+      lock-timeout-millis: 500
+      timeout-seconds: 300
+      backfill-batch-size: 1000
+      backfill-batch-delay: 0s
+      # 전환 뒤 이 시간 동안은 앱과 스키마를 데이터 손실 없이 되돌린다. 지나면 complete
+      rollback-window-seconds: ${PGROLL_ROLLBACK_WINDOW_SECONDS:600}
+      completer-interval-seconds: 30
