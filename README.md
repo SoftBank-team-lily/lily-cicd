@@ -37,6 +37,8 @@ flowchart TD
 
 배포 절차 자체는 `DeploymentStrategy` 인터페이스 뒤에 있습니다. 엔진은 요청을 받아 이 인터페이스만 호출합니다. 기본값은 Blue-Green이고, `lily.deploy.strategy=canary`이면 Canary를 사용합니다. 같은 타입의 Spring Bean을 직접 등록하면 그 구현이 우선합니다.
 
+클러스터(`deploy/k3s/lily-cicd.yaml`)는 2026-10-03부터 `LILY_DEPLOY_STRATEGY=canary`입니다. 사용자 요청을 20%씩 새 버전으로 옮기는 동안 두 버전이 같은 DB에 쓰고, 스키마 변경은 pgroll이 두 버전을 함께 맞춥니다.
+
 ```text
 DeploymentEngine
   → DeploymentStrategy.plan
@@ -272,6 +274,19 @@ DB, Router, Logging, Monitoring 모듈은 배포 절차를 직접 알 필요 없
 * 이름·타입 변경, 기본값 없는 `NOT NULL` 추가는 이전 슬롯의 쿼리를 깨뜨리므로 거절합니다.
 * `POST /api/deployments/{appName}/rollback`, `GET /api/deployments/{appName}`
 
+### 무중단 스키마 변경 (pgroll)
+
+`migrations`에 SQL 대신 pgroll 파일(앱 레포 `db/pgroll/{번호}_{설명}.yaml`)을 보내면 pgroll로 적용합니다. PostgreSQL만 씁니다. 같은 DB에 스키마 버전 두 개를 두고 두 버전의 쓰기를 DB 트리거가 맞추므로, 이름·타입 변경과 `NOT NULL` 추가도 한 번의 배포로 하고, 전환 뒤 롤백 창(기본 600초) 안에서는 행을 잃지 않고 앱과 스키마를 함께 되돌립니다. 규칙과 순서는 [docs/schema-migration.md](docs/schema-migration.md) 7 절에 있습니다.
+
+```text
+배포   이전 active complete → start → 새 슬롯은 public_{새 이름} 으로 접속 → Ready → 판정 → 전환 → 롤백 창
+롤백   (창 안) 이전 슬롯 복구 → selector 전환 → 현재 슬롯 0 → Pod 종료 확인 → pgroll rollback
+종료   창이 지나거나 다음 배포가 오면 complete
+```
+
+* 슬롯 Secret의 `DB_URL`에 `currentSchema=public_{마이그레이션 이름}`이 들어가서 앱 코드는 바뀌지 않습니다.
+* `POST /api/deployments/{appName}/schema/complete`: 롤백 창을 바로 닫습니다. 이후에는 스키마를 되돌릴 수 없습니다.
+
 ## 배포 요청
 
 `POST /api/deployments`
@@ -285,7 +300,7 @@ DB, Router, Logging, Monitoring 모듈은 배포 절차를 직접 알 필요 없
 | `databaseEnv` | DB 접속 환경변수를 직접 줍니다 (온프레미스 DB를 역방향 터널로 쓰는 대기 배포). DB 모듈을 부르지 않습니다. `database`와 같이 보내면 400 |
 | `host` | 생략하면 `{appName}.{domain}` |
 | `aliases` | `host`와 같은 Service로 보내는 추가 Ingress 호스트. lily-builder 엣지 Worker가 PC 장애 때 보내는 `{app}-cloud.{존}` |
-| `migrations` | 파일명 → SQL |
+| `migrations` | 파일명 → SQL. pgroll 파일(`.yaml`/`.json`)이면 pgroll로 적용합니다. 둘을 섞으면 400 |
 | `canaryPath` | Canary 판정 경로. 생략하면 readiness 경로 |
 
 성공 응답은 `status`, `activeColor`, `targetHostUrl`, `schemaVersion`, `logs`입니다. 실패는 `{status, message, logs}`로 400(입력), `409 REJECTED`(같은 앱 배포·롤백 진행 중), `422 ROLLED_BACK`(판정 실패), `500 FAILED`입니다.
@@ -477,9 +492,9 @@ SPRING_PROFILES_ACTIVE=local
 | 배포 API             | `POST /api/deployments`    |
 | 앱 관리 API          | `AppController`, `AppRemover` (`/api/apps/{app}`) |
 | 롤백 엔진              | `RollbackEngine`, `POST /api/deployments/{appName}/rollback` |
-| 스키마 마이그레이션         | `com.lily.cicd.schema` (`SchemaMigrator`, `MigrationLinter`) |
+| 스키마 마이그레이션         | `com.lily.cicd.schema` (`SchemaMigrator`, `MigrationLinter`, pgroll: `PgrollMigrator`, `PgrollCli`, `PgrollSet`) · `deploy` (`PgrollSchema`, `PgrollCompleter`, `SchemaController`) |
 | 릴리스 기록, 배포 잠금      | `com.lily.cicd.release` (`ReleaseStore`, `DeployLock`) |
 | 결과 DTO             | `DeploymentResultDto`      |
-| 배포 테스트             | `K8sBlueGreenDeployerTest`, `CanaryDeploymentStrategyTest`, `CanaryAnalysisTest`, `DeployWithMigrationTest`, `RollbackEngineTest`, `DeployRecoveryTest`, `PodDiagnosticsTest`, `ProbesTest`, `AppRemoverTest`, `NginxIngressRouterTest` |
-| 스키마 테스트            | `SchemaMigratorPostgresTest`, `SchemaMigratorMysqlTest` (Testcontainers, Docker 필요) |
+| 배포 테스트             | `K8sBlueGreenDeployerTest`, `CanaryDeploymentStrategyTest`, `CanaryAnalysisTest`, `DeployWithMigrationTest`, `RollbackEngineTest`, `DeployRecoveryTest`, `PodDiagnosticsTest`, `ProbesTest`, `AppRemoverTest`, `NginxIngressRouterTest`, `PgrollDeployTest`, `PgrollRollbackTest` |
+| 스키마 테스트            | `SchemaMigratorPostgresTest`, `SchemaMigratorMysqlTest`, `PgrollMigratorPostgresTest` (Testcontainers, Docker 필요. pgroll 은 실제 CLI) |
 | 커버리지 검사            | `./gradlew check` 가 라인 커버리지 75% 초과를 요구합니다 |
