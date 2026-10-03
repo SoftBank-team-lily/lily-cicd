@@ -116,7 +116,7 @@ pgroll 방식은 같은 DB 에 스키마 버전 두 개를 동시에 두고, 두
 
 ```text
 배포   이전 active complete → start → 새 슬롯은 public_{새 이름} 으로 접속 → Ready → 판정 → 전환 → 롤백 창 열림
-실패   트래픽을 옮기기 전이면 rollback (새 버전 스키마·임시 컬럼·트리거만 지운다)
+실패   트래픽을 옮기기 전이면 rollback (새 버전 스키마·임시 컬럼·트리거만 지운다). canary 가중치를 올리다 실패해도 같다
 롤백   (창 안) 이전 슬롯 복구 → selector 전환 → 현재 슬롯 0 → Pod 종료 확인 → rollback
 종료   창이 지나거나 다음 배포가 오면 complete (옛 컬럼·이전 버전 스키마 삭제)
 ```
@@ -163,6 +163,7 @@ pgroll 트리거는 `search_path` 가 최신 버전 스키마 이름과 정확�
 - 스키마를 바꾼 릴리스는 `appOnly` 롤백을 받지 않는다 (409). 코드만 바뀐 릴리스는 앱만 되돌린다
 - 창이 지나면 `PgrollCompleter` 가 30초마다 찾아 complete 한다. 창을 바로 닫으려면 `POST /api/deployments/{app}/schema/complete` (200 `COMPLETED`, 열린 창이 없으면 409)
 - complete 뒤에는 이전 버전 스키마가 없어서 롤백은 409 다
+- canary 가중치를 올리다 실패하면 전략이 새 슬롯과 가중치 입구를 지우고 이전 슬롯으로 트래픽을 되돌린다. 엔진은 새 슬롯이 지워진 것을 확인하고 바로 rollback 한다. 새 슬롯이 남아 있으면(이미 Service 를 옮긴 뒤의 실패) 스키마는 그대로 두고 롤백 API 로 되돌린다
 - 트래픽을 옮기기 전에 cicd 가 죽으면 `DeployRecovery` 가 새 슬롯을 지우고 rollback 한다
 
 ### 7.4 릴리스 기록

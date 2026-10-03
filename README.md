@@ -65,7 +65,7 @@ DeploymentEngine
 * 판정을 통과하면 본 Service 는 이전 슬롯만 보고, 사용자 비율은 `{app}-canary-ingress` 의 `canary-weight` 로 나눕니다. 0 에서 칸만큼 올려 100 이 됩니다.
 * 100 이 되면 본 Service 의 `track` 을 새 슬롯으로 옮기고 canary Ingress 를 지웁니다. 이전 슬롯은 replica 0 으로 남겨 롤백이 되살립니다.
 * Ready 전에 실패하면 그 Deployment 만 삭제하고, 이전 슬롯과 Service 는 유지합니다.
-* 비율을 올리다 실패하면 canary Ingress 와 새 슬롯을 지웁니다. 사용자 트래픽은 이전 이미지에 남습니다.
+* 비율을 올리다 실패하면 canary Ingress 와 새 슬롯을 지웁니다. 사용자 트래픽은 이전 이미지에 남습니다. 이번 배포가 pgroll 마이그레이션을 시작했으면 엔진이 바로 pgroll rollback 해서 이전 버전 스키마만 남깁니다.
 * 롤백은 `POST /api/deployments/{app}/rollback` 입니다. replica 0 인 이전 슬롯을 다시 띄우고 selector 를 그 트랙으로 옮긴 뒤, 방금 슬롯을 0 으로 내립니다. 스키마 U 가 있으면 함께 되돌립니다.
 
 `APP_COLOR`에는 슬롯 이름인 `stable` 또는 `canary`가 들어갑니다.
