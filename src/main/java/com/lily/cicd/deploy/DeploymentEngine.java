@@ -275,6 +275,8 @@ public class DeploymentEngine {
                 if (recovery != null) {
                     recovery.clear(namespace, appName);
                 }
+            } catch (RuntimeException e) {
+                throw failedSwitch(namespace, appName, plan, databaseEnv, pgrollChange, logs, e);
             } finally {
                 closeCanary(namespace, appName, logs);
             }
@@ -431,6 +433,29 @@ public class DeploymentEngine {
             logs.add("schema: " + stuck + " — " + e.getMessage());
             throw new DeploymentFailedException(deployError.getMessage() + ". " + stuck, logs, e);
         }
+    }
+
+    /**
+     * 트래픽 전환(canary 가중치 올리기) 중 실패. 전략이 새 슬롯을 지우고 이전 슬롯으로 트래픽을 되돌렸으면
+     * 새 버전 스키마를 쓰는 Pod 가 없으므로 이번 배포가 시작한 pgroll 마이그레이션을 바로 되돌린다.
+     * 새 슬롯이 남아 있으면 이미 트래픽을 받았을 수 있어서 스키마는 그대로 두고 롤백 API 에 맡긴다.
+     */
+    private RuntimeException failedSwitch(String namespace, String appName, SlotPlan plan,
+                                          Map<String, String> databaseEnv, PgrollChange change,
+                                          List<String> logs, RuntimeException switchError) {
+        if (change == null || !change.started()) {
+            return switchError;
+        }
+        if (releaseStore.read(namespace, appName, plan.target()).isPresent()) {
+            logs.add("schema: 새 슬롯 " + plan.target() + " 이 남아 있어 pgroll " + change.to()
+                    + " 은 그대로 둔다. 롤백 API 로 되돌린다");
+            return new DeploymentFailedException(switchError.getMessage(), logs, switchError);
+        }
+        revertPgroll(databaseEnv, change, logs, switchError);
+        if (recovery != null) {
+            recovery.clear(namespace, appName);
+        }
+        return new DeploymentFailedException(switchError.getMessage() + ". 스키마는 이전 버전으로 되돌림", logs, switchError);
     }
 
     private void route(DeployContext context, List<String> logs) {

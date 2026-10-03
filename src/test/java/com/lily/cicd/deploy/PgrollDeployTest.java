@@ -156,6 +156,48 @@ class PgrollDeployTest {
     }
 
     @Test
+    void 가중치_전환_중_실패해_새_슬롯이_지워졌으면_시작한_pgroll_마이그레이션을_바로_되돌린다() {
+        startReadyMarker();
+        when(migrator.migrate(eq(DB_ENV), any(PgrollSet.class), anyBoolean(), anyList()))
+                .thenReturn(new PgrollChange("01_create_posts", "02_add_slug", true, null));
+
+        DeploymentFailedException e = assertThrows(DeploymentFailedException.class,
+                () -> engine(8, mock(SchemaMigrator.class), properties -> failingSwitch(properties, true))
+                        .deploy(command(FILES)));
+
+        verify(migrator).rollback(eq(DB_ENV), eq("02_add_slug"), anyList());
+        assertTrue(e.getMessage().contains("스키마는 이전 버전으로 되돌림"), e.getMessage());
+        assertNull(deployment("lily-blue"));
+    }
+
+    @Test
+    void 가중치_전환_중_실패해도_새_슬롯이_남아_있으면_pgroll_마이그레이션을_그대로_둔다() {
+        startReadyMarker();
+        when(migrator.migrate(eq(DB_ENV), any(PgrollSet.class), anyBoolean(), anyList()))
+                .thenReturn(new PgrollChange("01_create_posts", "02_add_slug", true, null));
+
+        DeploymentFailedException e = assertThrows(DeploymentFailedException.class,
+                () -> engine(8, mock(SchemaMigrator.class), properties -> failingSwitch(properties, false))
+                        .deploy(command(FILES)));
+
+        verify(migrator, never()).rollback(any(), any(), anyList());
+        assertTrue(e.getLogs().stream().anyMatch(l -> l.contains("그대로 둔다")), e.getLogs().toString());
+    }
+
+    /** 카나리 가중치를 올리다 실패한 상황. removeTarget 이면 전략이 새 슬롯을 지우고 이전 슬롯으로 되돌린 뒤다 */
+    private DeploymentStrategy failingSwitch(DeployProperties properties, boolean removeTarget) {
+        return new BlueGreenDeploymentStrategy(client, properties) {
+            @Override
+            public void switchTraffic(DeployCommand command, String namespace, SlotPlan plan, List<String> logs) {
+                if (removeTarget) {
+                    client.apps().deployments().inNamespace(namespace).withName("lily-" + plan.target()).delete();
+                }
+                throw new DeploymentFailedException("canary 트래픽 전환 실패: lily-svc", logs, null);
+            }
+        };
+    }
+
+    @Test
     void pgroll_시작이_실패하면_슬롯을_만들지_않는다() {
         when(migrator.migrate(eq(DB_ENV), any(PgrollSet.class), anyBoolean(), anyList()))
                 .thenThrow(new SchemaOperationException("pgroll start 실패: lock timeout", null));
@@ -181,6 +223,11 @@ class PgrollDeployTest {
     }
 
     private DeploymentEngine engine(long readinessSeconds, SchemaMigrator flyway) {
+        return engine(readinessSeconds, flyway, properties -> new BlueGreenDeploymentStrategy(client, properties));
+    }
+
+    private DeploymentEngine engine(long readinessSeconds, SchemaMigrator flyway,
+                                    java.util.function.Function<DeployProperties, DeploymentStrategy> strategy) {
         DeployProperties properties = new DeployProperties();
         properties.setReadinessTimeoutSeconds(readinessSeconds);
         properties.setReplicas(1);
@@ -198,7 +245,7 @@ class PgrollDeployTest {
         };
         ReleaseStore releases = new ReleaseStore(client);
         PgrollSchema pgroll = new PgrollSchema(migrator, database, releases, client, Duration.ofMinutes(10));
-        return new DeploymentEngine(properties, new BlueGreenDeploymentStrategy(client, properties), database,
+        return new DeploymentEngine(properties, strategy.apply(properties), database,
                 new NginxIngressRouter(client), new Slf4jDeployLog(), new NoopDeployMonitor(),
                 flyway, releases, new DeployLock(client), null, new DeployProgress(), null, pgroll);
     }
