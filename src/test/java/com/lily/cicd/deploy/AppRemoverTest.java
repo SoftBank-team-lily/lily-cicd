@@ -145,8 +145,57 @@ class AppRemoverTest {
         assertEquals(0, replicas("blog-green"));
     }
 
+    @Test
+    void canary_전략_앱에_레플리카_0을_보내면_track이_가리키는_canary_슬롯을_0으로_줄인다() {
+        givenCanaryApp("shop");
+        DeployLock lock = new DeployLock(client);
+        AppController controller = new AppController(client, new DeployProperties(), lock,
+                new AppRemover(client, lock, new DeployProgress(), provisioner));
+
+        var response = controller.scale("shop", null, new AppController.ScaleRequest(0));
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals("canary", response.getBody().activeColor());
+        assertEquals(0, replicas("shop-canary"));
+        assertEquals(0, replicas("shop-stable"));
+    }
+
+    @Test
+    void canary_전략_앱을_조회하면_track이_가리키는_canary_슬롯의_레플리카를_돌려준다() {
+        givenCanaryApp("shop");
+        DeployLock lock = new DeployLock(client);
+        AppController controller = new AppController(client, new DeployProperties(), lock,
+                new AppRemover(client, lock, new DeployProgress(), provisioner));
+
+        var response = controller.status("shop", null);
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals("canary", response.getBody().activeColor());
+        assertEquals(2, response.getBody().replicas());
+    }
+
     private int replicas(String name) {
         return client.apps().deployments().inNamespace(NS).withName(name).get().getSpec().getReplicas();
+    }
+
+    /** canary 전략으로 두 번 배포한 상태: 트래픽은 canary(2), stable 은 0 으로 쉰다 */
+    private void givenCanaryApp(String app) {
+        for (String track : List.of("stable", "canary")) {
+            client.apps().deployments().inNamespace(NS).resource(new DeploymentBuilder()
+                    .withNewMetadata().withName(app + "-" + track).withNamespace(NS)
+                        .addToLabels("app", app).addToLabels("track", track).endMetadata()
+                    .withNewSpec().withReplicas("canary".equals(track) ? 2 : 0)
+                        .withNewSelector().addToMatchLabels("app", app).addToMatchLabels("track", track).endSelector()
+                        .withNewTemplate().withNewMetadata().addToLabels("app", app).addToLabels("track", track).endMetadata()
+                            .withNewSpec().addNewContainer().withName(app).withImage("nginx").endContainer().endSpec()
+                        .endTemplate()
+                    .endSpec()
+                    .build()).create();
+        }
+        client.services().inNamespace(NS).resource(new ServiceBuilder()
+                .withNewMetadata().withName(app + "-svc").withNamespace(NS).addToLabels("app", app).endMetadata()
+                .withNewSpec().addToSelector("app", app).addToSelector("track", "canary").endSpec()
+                .build()).create();
     }
 
     private void givenApp(String app) {

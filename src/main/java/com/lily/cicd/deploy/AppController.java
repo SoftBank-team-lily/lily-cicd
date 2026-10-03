@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 배포된 앱의 활성 슬롯(blue-green) 상태 조회와 레플리카 조정, 중지·다시 시작·삭제.
+ * 배포된 앱의 활성 슬롯(blue-green 의 color, canary 의 track) 상태 조회와 레플리카 조정, 중지·다시 시작·삭제.
  * 클라우드 버스팅에서 대기 슬롯을 0 으로 두었다가 부하가 오면 올리는 데 쓴다.
  * 새 배포를 하면 슬롯 레플리카는 다시 기본값으로 돌아간다 (중지한 앱도 다시 배포하면 뜬다).
  */
@@ -60,14 +60,14 @@ public class AppController {
                                            @RequestParam(required = false) String namespace,
                                            @Valid @RequestBody ScaleRequest request) {
         String ns = namespace(namespace);
-        String color = activeColor(ns, appName);
-        if (color == null) {
+        String slot = activeSlot(ns, appName);
+        if (slot == null) {
             return ResponseEntity.notFound().build();
         }
-        String deployment = appName + "-" + color;
+        String deployment = appName + "-" + slot;
         k8s.apps().deployments().inNamespace(ns).withName(deployment).scale(request.replicas());
         log.info("scaled app={} deployment={} replicas={}", appName, deployment, request.replicas());
-        return ResponseEntity.ok(statusOf(ns, appName, color));
+        return ResponseEntity.ok(statusOf(ns, appName, slot));
     }
 
     /**
@@ -124,20 +124,24 @@ public class AppController {
         return ResponseEntity.ok(removal);
     }
 
-    /** blue-green 의 Service selector 에 있는 color. Service 가 없거나 color 가 없으면 null */
-    private String activeColor(String ns, String appName) {
+    /**
+     * Service selector 가 가리키는 슬롯. blue-green 은 color, canary 전략은 track (stable 과 canary 를 번갈아 쓴다).
+     * Service 가 없거나 둘 다 없으면 null
+     */
+    private String selectedSlot(String ns, String appName) {
         Service service = k8s.services().inNamespace(ns).withName(appName + "-svc").get();
         if (service == null || service.getSpec() == null || service.getSpec().getSelector() == null) {
             return null;
         }
-        return service.getSpec().getSelector().get("color");
+        Map<String, String> selector = service.getSpec().getSelector();
+        return selector.containsKey("color") ? selector.get("color") : selector.get("track");
     }
 
-    /** 트래픽을 받는 슬롯. blue-green 은 Service 의 color, canary 전략은 stable. 앱이 없으면 null */
+    /** 트래픽을 받는 슬롯. Service 가 아직 없는 canary 첫 배포는 stable. 앱이 없으면 null */
     private String activeSlot(String ns, String appName) {
-        String color = activeColor(ns, appName);
-        if (color != null) {
-            return color;
+        String slot = selectedSlot(ns, appName);
+        if (slot != null) {
+            return slot;
         }
         return k8s.apps().deployments().inNamespace(ns).withName(appName + "-stable").get() == null ? null : "stable";
     }
