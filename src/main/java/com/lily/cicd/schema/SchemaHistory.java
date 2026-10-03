@@ -52,14 +52,13 @@ public class SchemaHistory {
     private static List<Entry> pgroll(Statement st) throws SQLException {
         List<Entry> entries = new ArrayList<>();
         try (ResultSet rs = st.executeQuery("""
-                SELECT name, done, migration_type, created_at, updated_at FROM pgroll.migrations
+                SELECT name, done, migration_type, created_at FROM pgroll.migrations
                 WHERE schema = 'public' AND migration_type IN ('pgroll', 'baseline')
                 ORDER BY created_at, name""")) {
             while (rs.next()) {
                 String type = rs.getString(3);
                 String state = "baseline".equals(type) ? "baseline" : rs.getBoolean(2) ? "complete" : "active";
-                entries.add(new Entry(rs.getString(1), null, state, instant(rs.getTimestamp(4)),
-                        "complete".equals(state) ? instant(rs.getTimestamp(5)) : null));
+                entries.add(new Entry(rs.getString(1), null, state, instant(rs.getTimestamp(4))));
             }
         }
         return entries;
@@ -73,7 +72,7 @@ public class SchemaHistory {
                      + SchemaDatabase.HISTORY_TABLE + " ORDER BY installed_rank")) {
             while (rs.next()) {
                 entries.add(new Entry(rs.getString(1), rs.getString(2), rs.getBoolean(3) ? "applied" : "failed",
-                        instant(rs.getTimestamp(4)), null));
+                        instant(rs.getTimestamp(4))));
             }
         } catch (SQLException e) {
             return List.of();
@@ -93,8 +92,8 @@ public class SchemaHistory {
      * @param version     pgroll 마이그레이션 이름 또는 Flyway 버전
      * @param description Flyway 설명. pgroll 은 null
      * @param state       pgroll: active / complete / baseline, Flyway: applied / failed
-     * @param completedAt pgroll complete 시각
+     * @param startedAt   pgroll start 또는 Flyway 적용 시각. pgroll 은 complete 시각을 남기지 않는다
      */
-    public record Entry(String version, String description, String state, Instant startedAt, Instant completedAt) {
+    public record Entry(String version, String description, String state, Instant startedAt) {
     }
 }
