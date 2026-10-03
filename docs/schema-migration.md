@@ -132,7 +132,7 @@ operations:
   - add_column:
       table: posts
       up: "lower(replace(subject, ' ', '-'))"   # 이전 버전이 쓴 행을 새 컬럼으로 옮기는 식
-      column: { name: slug, type: varchar(220), nullable: false }
+      column: { name: slug, type: varchar(220), nullable: true }
   - rename_column:
       table: posts
       from: title
@@ -140,7 +140,10 @@ operations:
 ```
 
 - `up` 은 이전 버전의 쓰기를 새 컬럼으로, `down` 은 새 버전의 쓰기를 옛 컬럼으로 옮긴다. 같은 마이그레이션에서 이름도 바꾸면 식 안의 컬럼은 새 이름으로 쓴다
-- `sql` 연산은 다른 연산과 한 파일에 같이 둘 수 없다
+- 적용 전 검사 (`PgrollLinter`, 위반은 400 이고 DB 는 바뀌지 않는다). Flyway lint 와 달리 이름·타입 변경은 막지 않는다
+  - `sql` 연산은 받지 않는다. 버전 스키마 없이 실제 테이블에 바로 적용돼 이전 버전도 바뀐다
+  - `add_column` 의 NOT NULL 컬럼은 `default` 가 있어야 한다. pgroll 은 `nullable` 을 쓰지 않으면 NOT NULL 이다. default 가 없으면 start 가 NOT NULL 검사 제약을 up 트리거보다 먼저 걸어서, 그 사이 이전 버전의 INSERT 가 실패한다 (실측 980건 중 1건). `nullable: true` 로 두거나 default 를 준다
+  - `alter_column` 에 `up` 이나 `type` 이 있으면 `down` 도 있어야 한다. 없으면 롤백할 때 새 버전이 쓴 값을 잃는다
 - 앱의 키 생성은 IDENTITY 나 serial 기본값을 쓴다. 버전 스키마에는 뷰만 있어서 스키마 없이 부르는 `nextval('..._seq')` 은 찾지 못한다
 - 이전 슬롯이 떠 있으면 배포마다 새 마이그레이션은 하나다. 둘 이상이면 400 (앞의 것을 complete 하면 이전 슬롯의 스키마가 사라진다)
 - pgroll 로 관리하는 DB 에 SQL 마이그레이션을 보내면 400. 마이그레이션 파일이 없는 커밋은 최신 버전 스키마로 접속한다

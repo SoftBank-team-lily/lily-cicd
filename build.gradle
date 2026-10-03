@@ -27,6 +27,8 @@ dependencies {
     implementation 'org.flywaydb:flyway-core'
     implementation 'org.flywaydb:flyway-database-postgresql'
     implementation 'org.flywaydb:flyway-mysql'
+    // pgroll 마이그레이션 파일(.yaml) 검사. 버전은 spring-boot 가 관리한다
+    implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
     runtimeOnly 'org.postgresql:postgresql'
     runtimeOnly 'com.mysql:mysql-connector-j'
 
