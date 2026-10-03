@@ -23,4 +23,14 @@ public interface DatabaseProvisioner {
     default boolean release(String appName) {
         return false;
     }
+
+    /**
+     * 앱 DB 에 pgroll 을 켠다 (상태 스키마와 이벤트 트리거, 관리자 권한 필요). 여러 번 불러도 된다.
+     * pgroll 마이그레이션을 적용하기 전에 부른다.
+     *
+     * @throws IllegalStateException DB 모듈이 pgroll 을 지원하지 않는다
+     */
+    default void enablePgroll(DeployContext context) {
+        throw new IllegalStateException("DB 모듈이 pgroll 을 지원하지 않는다");
+    }
 }

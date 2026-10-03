@@ -10,6 +10,8 @@ import com.lily.cicd.module.TrafficRouter;
 import com.lily.cicd.release.DeployLock;
 import com.lily.cicd.release.ReleaseStore;
 import com.lily.cicd.schema.MigrationSet;
+import com.lily.cicd.schema.PgrollMigrator.PgrollChange;
+import com.lily.cicd.schema.PgrollSet;
 import com.lily.cicd.schema.SchemaChange;
 import com.lily.cicd.schema.SchemaMigrator;
 import com.lily.cicd.schema.SchemaOperationException;
@@ -24,6 +26,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import static com.lily.cicd.deploy.StageRecorder.last;
@@ -62,6 +65,8 @@ public class DeploymentEngine {
     private final CanaryAnalysis canary;
     /** null 이면 프로세스가 죽어도 스키마를 되돌리지 않는다 */
     private final DeployRecovery recovery;
+    /** null 이면 pgroll 마이그레이션을 받지 않는다 */
+    private final PgrollSchema pgroll;
 
     /** canary 판정과 진행 상황 기록 없이 */
     public DeploymentEngine(
@@ -78,7 +83,7 @@ public class DeploymentEngine {
                 schemaMigrator, releaseStore, deployLock, null, null, null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
+    /** pgroll 없이 */
     public DeploymentEngine(
             DeployProperties properties,
             DeploymentStrategy strategy,
@@ -92,6 +97,26 @@ public class DeploymentEngine {
             CanaryAnalysis canary,
             DeployProgress progress,
             DeployRecovery recovery) {
+        this(properties, strategy, databaseProvisioner, trafficRouter, deployLog, deployMonitor,
+                schemaMigrator, releaseStore, deployLock, canary, progress, recovery, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public DeploymentEngine(
+            DeployProperties properties,
+            DeploymentStrategy strategy,
+            DatabaseProvisioner databaseProvisioner,
+            TrafficRouter trafficRouter,
+            DeployLog deployLog,
+            DeployMonitor deployMonitor,
+            SchemaMigrator schemaMigrator,
+            ReleaseStore releaseStore,
+            DeployLock deployLock,
+            CanaryAnalysis canary,
+            DeployProgress progress,
+            DeployRecovery recovery,
+            PgrollSchema pgroll) {
+        this.pgroll = pgroll;
         this.properties = properties;
         this.strategy = strategy;
         this.databaseProvisioner = databaseProvisioner;
@@ -127,9 +152,17 @@ public class DeploymentEngine {
     private DeploymentResultDto execute(DeployCommand command) {
         command = applyDefaults(command);
         validate(command);
-        MigrationSet scripts = MigrationSet.parse(command.migrations());
+        boolean pgrollMode = PgrollSet.isPgroll(command.migrations());
+        PgrollSet pgrollSet = pgrollMode ? PgrollSet.parse(command.migrations()) : PgrollSet.empty();
+        MigrationSet scripts = pgrollMode ? MigrationSet.empty() : MigrationSet.parse(command.migrations());
         if (!scripts.isEmpty() && isBlank(command.database())) {
             throw new IllegalArgumentException("migrations 는 database 와 함께 보내야 한다");
+        }
+        if (pgrollMode && pgroll == null) {
+            throw new IllegalArgumentException("이 lily-cicd 는 pgroll 마이그레이션을 받지 않는다");
+        }
+        if (pgrollMode && !"postgres".equals(command.database())) {
+            throw new IllegalArgumentException("pgroll 마이그레이션은 database=postgres 와 함께 보내야 한다");
         }
         boolean givenDatabase = command.databaseEnv() != null && !command.databaseEnv().isEmpty();
         if (givenDatabase && !isBlank(command.database())) {
@@ -167,12 +200,36 @@ public class DeploymentEngine {
             context = strategy.bind(context, plan);
             recorder.record(context, logs, DeployStages.COLOR, last(logs));
 
-            SchemaChange change = migrateSchema(context, databaseEnv, scripts, logs);
+            SchemaChange change = SchemaChange.NONE;
+            PgrollChange pgrollChange = null;
             Map<String, String> appEnv = databaseEnv;
-            if (!scripts.isEmpty()) {
-                appEnv = new LinkedHashMap<>(databaseEnv);
-                appEnv.put(APP_FLYWAY_ENV, "false");
+            if (pgrollMode) {
+                boolean oldVersionLive = releaseStore.read(namespace, appName, plan.previous())
+                        .map(r -> r.replicas() > 0).orElse(false);
+                pgrollChange = migratePgroll(context, databaseEnv, pgrollSet, oldVersionLive, logs);
+                appEnv = PgrollSchema.appEnv(databaseEnv, pgrollChange.to());
+            } else {
+                if (!scripts.isEmpty() && pgroll != null && "postgres".equals(command.database())
+                        && pgroll.latest(databaseEnv).isPresent()) {
+                    // 앱은 버전 스키마(뷰)로 붙어 있어서 public 에 바로 적용한 변경이 보이지 않는다
+                    throw new IllegalArgumentException("pgroll 로 관리하는 DB 다. SQL 마이그레이션 대신 db/pgroll 파일로 보내야 한다");
+                }
+                change = migrateSchema(context, databaseEnv, scripts, logs);
+                if (!scripts.isEmpty()) {
+                    appEnv = new LinkedHashMap<>(databaseEnv);
+                    appEnv.put(APP_FLYWAY_ENV, "false");
+                } else if (pgroll != null && "postgres".equals(command.database())) {
+                    // 마이그레이션 파일이 없는 커밋도 pgroll 로 관리하던 DB 면 최신 버전 스키마로 붙는다
+                    Optional<String> latest = pgroll.latest(databaseEnv);
+                    if (latest.isPresent()) {
+                        pgrollChange = new PgrollChange(latest.get(), latest.get(), false, null);
+                        appEnv = PgrollSchema.appEnv(databaseEnv, latest.get());
+                        logs.add("schema: pgroll 관리 DB, 마이그레이션 없음. " + PgrollSet.versionSchema(latest.get()) + " 로 접속");
+                    }
+                }
             }
+            String schemaVersion = pgrollChange != null ? pgrollChange.to() : SchemaVersions.format(change.to());
+            String schemaEngine = pgrollChange != null ? ReleaseStore.PGROLL : null;
 
             try {
                 releaseStore.saveScripts(namespace, appName, plan.target(), scripts);
@@ -180,10 +237,13 @@ public class DeploymentEngine {
                     recovery.arm(namespace, appName, plan.target(),
                             SchemaVersions.format(change.from()), command.database());
                 }
+                if (recovery != null && pgrollChange != null && pgrollChange.started()) {
+                    recovery.armPgroll(namespace, appName, plan.target(), pgrollChange.to(), command.database());
+                }
                 strategy.applyTarget(command, namespace, plan, appEnv, logs);
                 recorder.record(context, logs, DeployStages.DEPLOYMENT, last(logs));
                 releaseStore.annotate(namespace, appName, plan.target(), Instant.now(),
-                        SchemaVersions.format(change.to()), command.database());
+                        schemaVersion, command.database(), schemaEngine);
 
                 strategy.awaitReady(namespace, appName, plan, logs);
                 recorder.record(context, logs, DeployStages.READY, last(logs));
@@ -196,10 +256,14 @@ public class DeploymentEngine {
             } catch (RuntimeException e) {
                 closeCanary(namespace, appName, logs);
                 revertSchema(databaseEnv, scripts, change, logs, e);
+                boolean pgrollReverted = revertPgroll(databaseEnv, pgrollChange, logs, e);
+                if (recovery != null && pgrollReverted) {
+                    recovery.clear(namespace, appName);
+                }
                 if (e instanceof CanaryRejectedException) {
                     throw new CanaryRejectedException(e.getMessage(), logs);
                 }
-                if (!change.applied().isEmpty() && e instanceof DeploymentFailedException failed) {
+                if ((!change.applied().isEmpty() || pgrollReverted) && e instanceof DeploymentFailedException failed) {
                     // 예외의 로그는 만들 때 복사된다. 되돌린 결과를 응답에 담으려고 다시 만든다
                     throw new DeploymentFailedException(failed.getMessage(), logs, failed.getCause());
                 }
@@ -215,6 +279,9 @@ public class DeploymentEngine {
                 closeCanary(namespace, appName, logs);
             }
             recorder.record(context, logs, DeployStages.SERVICE, last(logs));
+            if (pgrollChange != null && pgrollChange.started()) {
+                pgroll.opened(namespace, appName, plan.target(), logs);
+            }
 
             route(context, logs);
             watch(context, logs);
@@ -225,8 +292,7 @@ public class DeploymentEngine {
             String active = strategy.finalSlot(plan);
             recorder.record(context, logs, DeployStages.SUCCEEDED,
                     "cutover complete. active=" + active + " host=" + host + " url=" + url);
-            return new DeploymentResultDto("SUCCESS", active, url,
-                    SchemaVersions.format(change.to()), List.copyOf(logs));
+            return new DeploymentResultDto("SUCCESS", active, url, schemaVersion, List.copyOf(logs));
             }
         } catch (RuntimeException e) {
             recorder.failed(context, logs, e);
@@ -320,6 +386,48 @@ public class DeploymentEngine {
         } catch (RuntimeException e) {
             log.error("schema revert failed. message={}", e.getMessage(), e);
             String stuck = "스키마를 되돌리지 못함. 스키마는 " + SchemaVersions.format(change.to()) + " 에 남음";
+            logs.add("schema: " + stuck + " — " + e.getMessage());
+            throw new DeploymentFailedException(deployError.getMessage() + ". " + stuck, logs, e);
+        }
+    }
+
+    /**
+     * 규칙 위반은 400 (IllegalArgumentException 그대로), pgroll 켜기·start 실패는 배포 실패다.
+     * 어느 쪽이든 슬롯은 아직 만들지 않았다.
+     */
+    private PgrollChange migratePgroll(DeployContext context, Map<String, String> databaseEnv, PgrollSet set,
+                                       boolean oldVersionLive, List<String> logs) {
+        try {
+            PgrollChange change = pgroll.migrate(context, databaseEnv, set, oldVersionLive, logs);
+            recorder.record(context, logs, DeployStages.MIGRATION, last(logs));
+            return change;
+        } catch (IllegalArgumentException e) {
+            logs.add("schema: " + e.getMessage());
+            throw e;
+        } catch (RuntimeException e) {
+            log.error("pgroll migration failed. app={} message={}", context.appName(), e.getMessage(), e);
+            logs.add("schema: failed — deployment 를 만들지 않음");
+            throw new DeploymentFailedException("스키마 마이그레이션 실패: " + e.getMessage(), logs, e);
+        }
+    }
+
+    /**
+     * 트래픽을 옮기기 전에 실패했으면 이번 배포가 시작한 pgroll 마이그레이션을 되돌린다.
+     * 새 슬롯은 이미 지워졌고 사용자 트래픽은 이전 슬롯(이전 버전 스키마)에 있다.
+     *
+     * @return 되돌렸으면 true
+     */
+    private boolean revertPgroll(Map<String, String> databaseEnv, PgrollChange change, List<String> logs,
+                                 RuntimeException deployError) {
+        if (change == null || !change.started()) {
+            return false;
+        }
+        try {
+            pgroll.rollback(databaseEnv, change.to(), logs);
+            return true;
+        } catch (RuntimeException e) {
+            log.error("pgroll revert failed. message={}", e.getMessage(), e);
+            String stuck = "스키마를 되돌리지 못함. pgroll " + change.to() + " 이 진행 중으로 남음";
             logs.add("schema: " + stuck + " — " + e.getMessage());
             throw new DeploymentFailedException(deployError.getMessage() + ". " + stuck, logs, e);
         }

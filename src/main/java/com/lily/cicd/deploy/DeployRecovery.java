@@ -44,16 +44,24 @@ public class DeployRecovery {
     private final DatabaseProvisioner databaseProvisioner;
     private final ReleaseStore releaseStore;
     private final DeployProgress progress;
+    /** null 이면 pgroll 마이그레이션은 되돌리지 않는다 */
+    private final PgrollSchema pgroll;
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicBoolean stopped = new AtomicBoolean();
 
     public DeployRecovery(KubernetesClient k8s, SchemaMigrator schemaMigrator, DatabaseProvisioner databaseProvisioner,
                           ReleaseStore releaseStore, DeployProgress progress) {
+        this(k8s, schemaMigrator, databaseProvisioner, releaseStore, progress, null);
+    }
+
+    public DeployRecovery(KubernetesClient k8s, SchemaMigrator schemaMigrator, DatabaseProvisioner databaseProvisioner,
+                          ReleaseStore releaseStore, DeployProgress progress, PgrollSchema pgroll) {
         this.k8s = k8s;
         this.schemaMigrator = schemaMigrator;
         this.databaseProvisioner = databaseProvisioner;
         this.releaseStore = releaseStore;
         this.progress = progress;
+        this.pgroll = pgroll;
     }
 
     /** 프로세스가 켜져 있는 동안 멈춘 배포를 정리한다 */
@@ -119,6 +127,28 @@ public class DeployRecovery {
         }
     }
 
+    /** pgroll 마이그레이션을 시작한 직후, 트래픽을 옮기기 전에 남긴다 */
+    public void armPgroll(String namespace, String appName, String targetSlot, String migration, String database) {
+        if (k8s == null) {
+            return;
+        }
+        try {
+            k8s.configMaps().inNamespace(namespace).resource(new ConfigMapBuilder()
+                    .withNewMetadata()
+                        .withName(name(appName))
+                        .withNamespace(namespace)
+                        .addToLabels("app", appName)
+                        .addToLabels("lily.io/recovery", "true")
+                    .endMetadata()
+                    .addToData("targetSlot", targetSlot)
+                    .addToData("pgroll", migration)
+                    .addToData("database", database == null ? "" : database)
+                    .build()).createOrReplace();
+        } catch (RuntimeException e) {
+            log.warn("recovery arm failed. app={} message={}", appName, e.getMessage());
+        }
+    }
+
     /** 트래픽이 새 슬롯으로 옮겨진 뒤. 이 시점의 스키마는 되돌리면 안 된다 */
     public void clear(String namespace, String appName) {
         if (k8s == null) {
@@ -156,9 +186,27 @@ public class DeployRecovery {
         String target = data.get("targetSlot");
         String schemaFrom = data.get("schemaFrom");
         String database = data.get("database");
+        String pgrollMigration = data.get("pgroll");
         deleteCanary(namespace, app);
 
         String message = "배포 중 프로세스가 죽어 중단됨";
+        if (pgroll != null && target != null && pgrollMigration != null && !pgrollMigration.isBlank()
+                && !target.equals(serviceColor(namespace, app))) {
+            List<String> logs = new ArrayList<>();
+            try {
+                DeployContext context = new DeployContext(app, namespace, null, 0, DeploymentEngine.SERVICE_PORT,
+                        app + ".recovery", "recovery", target, DeploymentEngine.serviceName(app),
+                        DeploymentEngine.METRICS_PATH, database);
+                // 트래픽을 받기 전인 새 슬롯을 먼저 지운다. 그 슬롯만 새 버전 스키마를 쓴다
+                k8s.apps().deployments().inNamespace(namespace).withName(ReleaseStore.deploymentName(app, target)).delete();
+                pgroll.rollback(databaseProvisioner.prepare(context), pgrollMigration, logs);
+                message = "배포 중 프로세스가 죽어 pgroll " + pgrollMigration + " 을 되돌림";
+                log.warn("recovered pgroll. app={} {}", app, logs);
+            } catch (RuntimeException e) {
+                message = "배포 중 프로세스가 죽었고 pgroll " + pgrollMigration + " 을 되돌리지 못함: " + e.getMessage();
+                log.error("pgroll recovery failed. app={} message={}", app, e.getMessage(), e);
+            }
+        }
         if (target != null && schemaFrom != null && !schemaFrom.isBlank()
                 && !target.equals(serviceColor(namespace, app))) {
             List<String> logs = new ArrayList<>();

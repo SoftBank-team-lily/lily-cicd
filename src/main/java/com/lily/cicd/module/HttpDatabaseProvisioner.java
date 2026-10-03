@@ -65,6 +65,14 @@ public final class HttpDatabaseProvisioner implements DatabaseProvisioner {
         return true;
     }
 
+    /** prepare 로 DB 가 만들어진 뒤에 부른다. 프로비저너가 관리자 계정으로 pgroll init 과 권한 부여를 한다 */
+    @Override
+    public void enablePgroll(DeployContext context) {
+        Database db = find(context.appName())
+                .orElseThrow(() -> new IllegalStateException("database not found: project=" + context.appName()));
+        http.post().uri("/api/databases/{id}/pgroll", db.id()).retrieve().toBodilessEntity();
+    }
+
     private Database findOrCreate(String projectId, String engine) {
         Optional<Database> existing = find(projectId);
         // FAILED 는 같은 projectId 로 다시 POST 하면 프로비저너가 정리하고 새로 만든다
