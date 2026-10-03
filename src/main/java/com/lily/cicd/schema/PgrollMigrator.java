@@ -68,7 +68,12 @@ public class PgrollMigrator {
         set.migrations().forEach(m -> wanted.add(m.name()));
         String from = state.latest().orElse(null);
         List<PgrollSet.Migration> pending = pending(set, state);
-        // 검사를 모두 끝낸 뒤에 DB 를 바꾼다
+        // 검사를 모두 끝낸 뒤에 DB 를 바꾼다. 이미 적용한 파일은 다시 보지 않는다
+        List<String> violations = PgrollLinter.lint(pending);
+        if (!violations.isEmpty()) {
+            violations.forEach(v -> logs.add("schema: lint " + v));
+            throw new IllegalArgumentException("pgroll 마이그레이션 규칙 위반: " + String.join("; ", violations));
+        }
         if (pending.isEmpty()) {
             if (from == null) {
                 throw new IllegalArgumentException("pgroll 마이그레이션이 하나도 적용되지 않았다");

@@ -49,7 +49,7 @@ class PgrollMigratorPostgresTest {
               - add_column:
                   table: posts
                   up: "lower(replace(title, ' ', '-'))"
-                  column: { name: slug, type: varchar(220), nullable: false }
+                  column: { name: slug, type: varchar(220), nullable: true }
             """;
     private static final String TITLE_TO_SUBJECT = """
             operations:
@@ -201,9 +201,22 @@ class PgrollMigratorPostgresTest {
     }
 
     @Test
+    void 규칙_위반_마이그레이션은_이전_active를_complete하지_않고_400으로_거절한다() {
+        init();
+        migrator.migrate(env(), set("01_create_posts", CREATE_POSTS), false, logs);
+        String raw = "operations:\n  - sql:\n      up: \"ALTER TABLE posts ADD COLUMN x int\"\n";
+
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> migrator.migrate(env(),
+                set("01_create_posts", CREATE_POSTS, "02_raw", raw), true, logs));
+
+        assertTrue(e.getMessage().contains("sql 연산은"), e.getMessage());
+        assertEquals(Optional.of("01_create_posts"), migrator.active(env()));
+    }
+
+    @Test
     void CLI가_실패하면_마지막_출력_줄을_이유로_던진다() {
         init();
-        String bad = "operations:\n  - add_column:\n      table: nope\n      column: { name: x, type: int }\n";
+        String bad = "operations:\n  - add_column:\n      table: nope\n      column: { name: x, type: int, nullable: true }\n";
 
         SchemaOperationException e = assertThrows(SchemaOperationException.class,
                 () -> migrator.migrate(env(), set("01_bad", bad), false, logs));
