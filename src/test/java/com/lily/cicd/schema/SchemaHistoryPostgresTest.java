@@ -87,7 +87,5 @@ class SchemaHistoryPostgresTest {
         assertEquals(List.of("01_create_posts", "02_add_title"),
                 read.entries().stream().map(SchemaHistory.Entry::version).toList());
         assertEquals(List.of("complete", "active"), read.entries().stream().map(SchemaHistory.Entry::state).toList());
-        assertNotNull(read.entries().get(0).completedAt());
-        assertNull(read.entries().get(1).completedAt());
     }
 }

@@ -77,9 +77,8 @@ class SchemaControllerTest {
         givenSlot("stable", 0, "2026-10-03T01:00:00Z", "01_create_posts", "postgres", "complete", null);
         givenSlot("canary", 2, "2026-10-03T02:00:00Z", "02_add_slug", "postgres", "active", "2026-10-03T02:10:00Z");
         List<SchemaHistory.Entry> entries = List.of(
-                new SchemaHistory.Entry("01_create_posts", null, "complete", Instant.parse("2026-10-03T01:00:00Z"),
-                        Instant.parse("2026-10-03T02:00:00Z")),
-                new SchemaHistory.Entry("02_add_slug", null, "active", Instant.parse("2026-10-03T02:00:00Z"), null));
+                new SchemaHistory.Entry("01_create_posts", null, "complete", Instant.parse("2026-10-03T01:00:00Z")),
+                new SchemaHistory.Entry("02_add_slug", null, "active", Instant.parse("2026-10-03T02:00:00Z")));
         when(history.read(any())).thenReturn(new SchemaHistory.History("pgroll", entries));
 
         ResponseEntity<SchemaController.SchemaView> response = controller().schema("lily", null);
