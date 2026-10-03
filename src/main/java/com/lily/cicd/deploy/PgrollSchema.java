@@ -21,7 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * 배포·롤백·복구가 함께 쓰는 pgroll 단계. 순서와 규칙은 docs/schema-migration.md 7 절.
+ * 배포·롤백·복구가 함께 쓰는 pgroll 단계. 순서는 {@link PgrollMigrator}.
  *
  * <p>릴리스의 pgroll 상태는 슬롯 Deployment 어노테이션에 남긴다.
  * active 인 동안이 롤백 창이고, 창이 지나면 {@link PgrollCompleter} 가 complete 한다.

@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
-/** pgroll 롤백 창을 닫는다. docs/schema-migration.md 7 절 */
+/** pgroll 롤백 창을 닫는다 */
 @RestController
 @RequestMapping("/api/deployments")
 public class SchemaController {

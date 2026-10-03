@@ -110,9 +110,9 @@ spec:
                   # lily-db-provisioner 배포 때 만든 Secret 의 토큰을 같이 쓴다
                   name: db-provisioner-env
                   key: PROVISIONER_API_TOKEN
-            # 배포 전략: blue-green 또는 canary
+            # 배포 전략: blue-green 또는 canary. canary 는 사용자 요청을 20% 씩 새 버전으로 옮긴다 (스키마 변경은 pgroll 로 두 버전이 함께 쓴다)
             - name: LILY_DEPLOY_STRATEGY
-              value: blue-green
+              value: canary
             # 앱 주소 https://{app}.lilycloud.kr. Cloudflare 프록시 CNAME → lily-alb → ingress-nginx
             #   레코드는 lily-builder 가 배포 성공 뒤 만든다. 온프레미스 앱과 같은 존이라 거점 전환은 CNAME 내용물만 바꾼다
             #   (예전 앱의 {app}.apps.lilycloud.kr 규칙은 Ingress 에 그대로 남는다)

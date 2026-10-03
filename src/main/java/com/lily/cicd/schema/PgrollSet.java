@@ -15,7 +15,6 @@ import java.util.regex.Pattern;
  *
  * <p>파일명(확장자 제외)이 pgroll 마이그레이션 이름이고, 앱은 {@code public_{이름}} 버전 스키마로 접속한다.
  * 배포 요청의 {@code migrations} 에 SQL 대신 이 파일들이 오면 pgroll 로 적용한다. 둘을 섞을 수 없다.
- * docs/schema-migration.md 7 절.
  */
 public final class PgrollSet {
 

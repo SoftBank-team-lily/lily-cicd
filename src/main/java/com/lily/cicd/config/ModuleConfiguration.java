@@ -112,7 +112,7 @@ public class ModuleConfiguration {
                 pgrollSchema);
     }
 
-    /** 무중단 스키마 변경. docs/schema-migration.md 7 절 */
+    /** 무중단 스키마 변경 (pgroll) */
     @Bean
     public PgrollSchema pgrollSchema(PgrollProperties pgroll, DatabaseProvisioner databaseProvisioner,
                                      ReleaseStore releaseStore, KubernetesClient kubernetesClient) {

@@ -47,7 +47,7 @@ lily:
       max-p95-ratio: 2.0
       min-p95-regression-millis: 100
       min-samples: 20
-  # 무중단 스키마 변경 (앱 레포 db/pgroll/*.yaml). docs/schema-migration.md 7 절
+  # 무중단 스키마 변경 (앱 레포 db/pgroll/*.yaml)
   schema:
     pgroll:
       binary: pgroll

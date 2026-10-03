@@ -21,7 +21,7 @@ import java.util.function.Function;
 import java.util.stream.Stream;
 
 /**
- * pgroll 로 무중단 스키마 변경을 한다 (expand/contract). 순서와 규칙은 docs/schema-migration.md 7 절.
+ * pgroll 로 무중단 스키마 변경을 한다 (expand/contract).
  *
  * <pre>
  * 배포   이전 active complete → (이력 없으면 baseline) → start (active 로 남김) → 새 슬롯은 public_{새 이름}

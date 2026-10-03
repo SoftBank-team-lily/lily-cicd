@@ -5,7 +5,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
- * pgroll 무중단 스키마 변경. docs/schema-migration.md 7 절.
+ * pgroll 무중단 스키마 변경.
  *
  * @param sslmode                lib/pq 값. RDS 는 require, 로컬 Postgres 컨테이너는 disable
  * @param lockTimeoutMillis      DDL 이 잠금을 기다리는 최대 시간. 넘으면 배포가 실패하고 서비스 쿼리는 막지 않는다
