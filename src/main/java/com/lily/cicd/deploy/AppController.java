@@ -3,8 +3,10 @@ package com.lily.cicd.deploy;
 import com.lily.cicd.config.DeployProperties;
 import com.lily.cicd.release.DeployConflictException;
 import com.lily.cicd.release.DeployLock;
+import io.fabric8.kubernetes.api.model.Secret;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
+import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -16,6 +18,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -31,6 +34,8 @@ public class AppController {
     private static final Logger log = LoggerFactory.getLogger(AppController.class);
     /** 계정당 DB 커넥션 제한(20) / 앱 풀 크기(3) 안에 들어오도록 */
     private static final int MAX_REPLICAS = 5;
+    /** Pod 템플릿 어노테이션. DB 를 바꾼 출처(copy|pc)와 시각. 바뀌면 Pod 를 다시 띄운다 */
+    static final String DATABASE_SOURCE = "lily.io/database-source";
 
     private final KubernetesClient k8s;
     private final DeployProperties properties;
@@ -110,6 +115,81 @@ public class AppController {
     }
 
     /**
+     * 활성 슬롯의 DB 접속 정보를 바꾸고 Pod 를 다시 띄운다. 온프레미스 PC 장애 때 builder 가 대기 슬롯을
+     * 내 PC DB(역방향 터널)에서 클라우드 사본(RDS)으로 돌릴 때 쓴다. 원래 값은 {@code {슬롯}-db-pc} 에 한 번만 남겨
+     * {@code DELETE} 로 되돌린다. 슬롯 Secret 에 이미 있는 키만 바꾼다 (컨테이너는 그 키만 읽는다).
+     * Secret 이 없으면 409, 바꿀 키가 없으면 400, 배포·롤백 중이면 409.
+     */
+    @PutMapping("/{appName}/database")
+    public ResponseEntity<AppStatus> switchDatabase(@PathVariable String appName,
+                                                    @RequestParam(required = false) String namespace,
+                                                    @Valid @RequestBody DatabaseRequest request) {
+        String ns = namespace(namespace);
+        String slot = activeSlot(ns, appName);
+        if (slot == null) {
+            return ResponseEntity.notFound().build();
+        }
+        String deployment = appName + "-" + slot;
+        try (DeployLock.Handle ignored = lock.acquire(ns, appName, "database")) {
+            Secret current = k8s.secrets().inNamespace(ns).withName(DatabaseSecret.name(deployment)).get();
+            if (current == null) {
+                throw new DeployConflictException(deployment + " 에 DB Secret 이 없다");
+            }
+            Map<String, String> values = DatabaseSecret.read(current);
+            if (k8s.secrets().inNamespace(ns).withName(DatabaseSecret.savedName(deployment)).get() == null) {
+                DatabaseSecret.write(k8s, ns, appName, DatabaseSecret.savedName(deployment), values);
+            }
+            Map<String, String> next = new LinkedHashMap<>(values);
+            int replaced = 0;
+            for (String key : values.keySet()) {
+                String value = request.env().get(key);
+                if (value != null && !value.isBlank()) {
+                    next.put(key, value);
+                    replaced++;
+                }
+            }
+            if (replaced == 0) {
+                throw new IllegalArgumentException("바꿀 DB 접속 키가 없다: " + values.keySet());
+            }
+            DatabaseSecret.write(k8s, ns, appName, DatabaseSecret.name(deployment), next);
+            restart(ns, deployment, "copy");
+            log.info("database switched to copy: app={} deployment={} keys={}", appName, deployment, replaced);
+        }
+        return ResponseEntity.ok(statusOf(ns, appName, slot));
+    }
+
+    /** {@link #switchDatabase} 전의 값으로 되돌리고 Pod 를 다시 띄운다. 바꾼 적이 없으면 그대로 200 */
+    @DeleteMapping("/{appName}/database")
+    public ResponseEntity<AppStatus> restoreDatabase(@PathVariable String appName,
+                                                     @RequestParam(required = false) String namespace) {
+        String ns = namespace(namespace);
+        String slot = activeSlot(ns, appName);
+        if (slot == null) {
+            return ResponseEntity.notFound().build();
+        }
+        String deployment = appName + "-" + slot;
+        try (DeployLock.Handle ignored = lock.acquire(ns, appName, "database")) {
+            Secret saved = k8s.secrets().inNamespace(ns).withName(DatabaseSecret.savedName(deployment)).get();
+            if (saved != null) {
+                DatabaseSecret.write(k8s, ns, appName, DatabaseSecret.name(deployment), DatabaseSecret.read(saved));
+                k8s.secrets().inNamespace(ns).withName(DatabaseSecret.savedName(deployment)).delete();
+                restart(ns, deployment, "pc");
+                log.info("database restored: app={} deployment={}", appName, deployment);
+            }
+        }
+        return ResponseEntity.ok(statusOf(ns, appName, slot));
+    }
+
+    /** Pod 템플릿 어노테이션을 바꿔 새 Pod 로 갈아 끼운다 (Secret 값은 Pod 가 뜰 때 읽는다) */
+    private void restart(String ns, String deployment, String source) {
+        k8s.apps().deployments().inNamespace(ns).withName(deployment).edit(d -> new DeploymentBuilder(d)
+                .editSpec().editTemplate().editOrNewMetadata()
+                    .addToAnnotations(DATABASE_SOURCE, source + "@" + java.time.Instant.now())
+                .endMetadata().endTemplate().endSpec()
+                .build());
+    }
+
+    /**
      * 앱을 클러스터에서 지운다. {@code database=true} 면 DB 도 DROP 한다 (되돌릴 수 없다).
      * 아무것도 없으면 404, 배포·롤백 중이면 409.
      */
@@ -156,6 +236,9 @@ public class AppController {
 
     private String namespace(String requested) {
         return requested == null || requested.isBlank() ? properties.getNamespace() : requested;
+    }
+
+    public record DatabaseRequest(@NotNull Map<String, String> env) {
     }
 
     public record ScaleRequest(@NotNull @Min(0) @Max(MAX_REPLICAS) Integer replicas) {

@@ -72,9 +72,11 @@ public class AppRemover {
                 if (!k8s.policy().v1().podDisruptionBudget().inNamespace(namespace).withName(pdb).delete().isEmpty()) {
                     deleted.add("pdb/" + pdb);
                 }
-                String secret = DatabaseSecret.name(appName + "-" + slot);
-                if (!k8s.secrets().inNamespace(namespace).withName(secret).delete().isEmpty()) {
-                    deleted.add("secret/" + secret);
+                for (String secret : List.of(DatabaseSecret.name(appName + "-" + slot),
+                        DatabaseSecret.savedName(appName + "-" + slot))) {
+                    if (!k8s.secrets().inNamespace(namespace).withName(secret).delete().isEmpty()) {
+                        deleted.add("secret/" + secret);
+                    }
                 }
             }
             for (HasMetadata c : k8s.configMaps().inNamespace(namespace).withLabel("app", appName).list().getItems()) {

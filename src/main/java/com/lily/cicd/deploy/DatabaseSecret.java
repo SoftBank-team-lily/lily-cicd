@@ -28,6 +28,42 @@ final class DatabaseSecret {
         return deploymentName + "-db";
     }
 
+    /** 장애 때 DB 를 클라우드 사본으로 바꾸기 전의 원래 값 (보통 온프레미스 DB 로 가는 역방향 터널) */
+    static String savedName(String deploymentName) {
+        return name(deploymentName) + "-pc";
+    }
+
+    /** Secret 의 값. data(base64)와 stringData 를 합친다 */
+    static Map<String, String> read(Secret secret) {
+        Map<String, String> values = new LinkedHashMap<>();
+        if (secret.getData() != null) {
+            secret.getData().forEach((key, value) -> values.put(key,
+                    new String(java.util.Base64.getDecoder().decode(value), java.nio.charset.StandardCharsets.UTF_8)));
+        }
+        if (secret.getStringData() != null) {
+            values.putAll(secret.getStringData());
+        }
+        return values;
+    }
+
+    /** 이름의 Secret 을 values 로 통째로 둔다 */
+    static void write(KubernetesClient client, String namespace, String appName, String secretName,
+                      Map<String, String> values) {
+        Map<String, String> data = new LinkedHashMap<>();
+        values.forEach((key, value) -> data.put(key,
+                java.util.Base64.getEncoder().encodeToString(value.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        Secret secret = new SecretBuilder()
+                .withNewMetadata()
+                    .withName(secretName)
+                    .withNamespace(namespace)
+                    .addToLabels("app", appName)
+                .endMetadata()
+                .withType("Opaque")
+                .withData(data)
+                .build();
+        client.secrets().inNamespace(namespace).resource(secret).createOrReplace();
+    }
+
     /** 요청 env 나 엔진 값이 같은 이름을 쓰면 그쪽이 이기므로 Secret 에서 뺀다 */
     static Map<String, String> entries(Map<String, String> databaseEnv, Set<String> overridden) {
         Map<String, String> entries = new LinkedHashMap<>();
