@@ -144,6 +144,44 @@ class PgrollDeployTest {
     }
 
     @Test
+    void 다른_클라우드의_DB를_따라가는_배포는_pgroll_최신_버전_스키마로_접속하고_스키마를_기록하지_않는다() {
+        startReadyMarker();
+        when(migrator.latest(DB_ENV)).thenReturn(Optional.of("02_add_slug"));
+
+        DeploymentResultDto result = engine(8).deploy(follower(true)).join();
+
+        assertEquals("SUCCESS", result.status());
+        assertNull(result.schemaVersion());
+        Deployment blue = deployment("lily-blue");
+        assertEquals("jdbc:postgresql://db/lily?currentSchema=public_02_add_slug", env(blue, "DB_URL"));
+        assertEquals("public_02_add_slug", env(blue, "LILY_DB_SCHEMA"));
+        Map<String, String> annotations = blue.getMetadata().getAnnotations();
+        assertNull(annotations.get(ReleaseStore.SCHEMA_ENGINE));
+        assertNull(annotations.get(ReleaseStore.SCHEMA_VERSION));
+        verify(migrator, never()).migrate(any(), any(), anyBoolean(), anyList());
+        assertTrue(enabled.isEmpty());
+    }
+
+    @Test
+    void DB를_받기만_한_배포는_pgroll_버전_스키마를_붙이지_않는다() {
+        startReadyMarker();
+
+        engine(8).deploy(follower(false)).join();
+
+        assertEquals("jdbc:postgresql://db/lily", env(deployment("lily-blue"), "DB_URL"));
+        verify(migrator, never()).latest(any());
+    }
+
+    @Test
+    void DB_접속_정보_없이_pgroll을_따라가라고_하면_400으로_거절한다() {
+        DeployCommand followOnly = new DeployCommand("lily", "image:2", 8080, null, null, null, null, "2", null,
+                Map.of(), null, null, Map.of(), null, Map.of(), null, true);
+
+        assertThrows(IllegalArgumentException.class, () -> engine(8).deploy(followOnly));
+        assertNull(deployment("lily-blue"));
+    }
+
+    @Test
     void pgroll로_관리하던_DB에_SQL_마이그레이션을_보내면_400으로_거절하고_적용하지_않는다() {
         when(migrator.latest(DB_ENV)).thenReturn(Optional.of("02_add_slug"));
         SchemaMigrator flyway = mock(SchemaMigrator.class);
@@ -253,6 +291,12 @@ class PgrollDeployTest {
     private static DeployCommand command(Map<String, String> migrations) {
         return new DeployCommand("lily", "image:2", 8080, null, null, null, null, "2", null, Map.of(),
                 "postgres", null, migrations);
+    }
+
+    /** 멀티클라우드 두 번째 클라우드 배포: DB 는 만들지 않고 받은 접속 정보를 쓴다 */
+    private static DeployCommand follower(boolean followPgroll) {
+        return new DeployCommand("lily", "image:2", 8080, null, null, null, null, "2", null, Map.of(),
+                null, null, Map.of(), null, DB_ENV, null, followPgroll);
     }
 
     private void startReadyMarker() {

@@ -20,6 +20,8 @@ import java.util.Map;
  * @param databaseEnv      DB 접속 환경변수를 호출자가 정해 보낸다 (온프레미스 DB 를 역방향 터널로 쓰는 클라우드 대기 배포).
  *                         비어 있지 않으면 DB 모듈을 부르지 않고 이 값을 슬롯 Secret 에 넣는다. database 와 같이 보내지 않는다
  * @param aliases          host 와 같은 Service 로 보내는 추가 Ingress 호스트. 비어 있으면 없다
+ * @param followPgroll     databaseEnv 가 다른 클라우드의 DB 이고 그 클라우드가 pgroll 을 관리한다 (멀티클라우드 두 번째 클라우드).
+ *                         pgroll 최신 버전 스키마로 접속만 하고, 스키마 버전은 이 클러스터에 기록하지 않는다
  */
 public record DeployCommand(
         String appName,
@@ -37,10 +39,22 @@ public record DeployCommand(
         Map<String, String> migrations,
         String canaryPath,
         Map<String, String> databaseEnv,
-        List<String> aliases
+        List<String> aliases,
+        boolean followPgroll
 ) {
     public DeployCommand {
         aliases = aliases == null ? List.of() : List.copyOf(aliases);
+    }
+
+    /** DB 를 이 클러스터가 관리한다 (멀티클라우드 두 번째 클라우드가 아니다) */
+    public DeployCommand(
+            String appName, String imageUrl, int targetPort, String namespace, String domain,
+            String readinessPath, String livenessPath, String appVersion, String imagePullSecret,
+            Map<String, String> extraEnv, String database, String host, Map<String, String> migrations,
+            String canaryPath, Map<String, String> databaseEnv, List<String> aliases) {
+        this(appName, imageUrl, targetPort, namespace, domain, readinessPath, livenessPath,
+                appVersion, imagePullSecret, extraEnv, database, host, migrations, canaryPath, databaseEnv, aliases,
+                false);
     }
 
     /** 추가 호스트 없이 배포 */
