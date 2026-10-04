@@ -120,6 +120,15 @@ spec:
               value: lilycloud.kr
             - name: LILY_DEPLOY_URL_SCHEME
               value: https
+            # Router 모듈(lily-router) 연동. 주석을 풀면 Ingress 를 직접 쓰지 않고 lily-router 에 HTTP 로 요청한다.
+            # 비워 두면 지금처럼 NginxIngressRouter 가 Ingress 를 직접 쓴다. 토큰은 lily-router 설치 때 만든 Secret 을 같이 쓴다
+            # - name: LILY_ROUTER_URL
+            #   value: http://lily-router.lily-system.svc
+            # - name: LILY_ROUTER_API_TOKEN
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: lily-router-token
+            #       key: LILY_ROUTER_API_TOKEN
           resources:
             requests:
               cpu: 100m

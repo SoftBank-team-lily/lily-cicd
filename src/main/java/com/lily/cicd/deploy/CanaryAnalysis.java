@@ -3,14 +3,14 @@ package com.lily.cicd.deploy;
 import com.lily.cicd.config.DeployProperties;
 import com.lily.cicd.module.DeployContext;
 import com.lily.cicd.module.DeployStages;
+import com.lily.cicd.module.NginxIngressRouter;
+import com.lily.cicd.module.TrafficRouter;
 import io.fabric8.kubernetes.api.model.IntOrString;
 import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServiceBuilder;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
-import io.fabric8.kubernetes.api.model.networking.v1.Ingress;
 import io.fabric8.kubernetes.client.KubernetesClient;
-import io.fabric8.kubernetes.client.KubernetesClientException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,13 +55,26 @@ public class CanaryAnalysis {
     private final DeployProperties.CanaryAnalysis settings;
     private final String clusterDomain;
     private final HttpClient http;
+    /** 판정 전 host 확인과 남은 canary 입구 정리는 Router 모듈에 묻는다 */
+    private final TrafficRouter router;
 
+    /** Ingress 를 직접 쓰는 기본 Router 로 */
     public CanaryAnalysis(KubernetesClient k8sClient, DeployProperties properties) {
-        this(k8sClient, properties, "svc.cluster.local");
+        this(k8sClient, properties, new NginxIngressRouter(k8sClient));
+    }
+
+    public CanaryAnalysis(KubernetesClient k8sClient, DeployProperties properties, TrafficRouter router) {
+        this(k8sClient, properties, "svc.cluster.local", router);
     }
 
     /** @param clusterDomain Service 주소 접미사. 테스트에서 바꾼다 */
     CanaryAnalysis(KubernetesClient k8sClient, DeployProperties properties, String clusterDomain) {
+        this(k8sClient, properties, clusterDomain, new NginxIngressRouter(k8sClient));
+    }
+
+    CanaryAnalysis(KubernetesClient k8sClient, DeployProperties properties, String clusterDomain,
+                   TrafficRouter router) {
+        this.router = router;
         this.k8sClient = k8sClient;
         this.settings = properties.getCanaryAnalysis();
         this.clusterDomain = clusterDomain;
@@ -128,13 +141,14 @@ public class CanaryAnalysis {
 
     /** canary Ingress 와 Service 를 지운다. 없으면 넘어가고, API 가 잠깐 실패하면 몇 번 다시 시도한다 */
     public void cleanup(String namespace, String app, List<String> logs) {
-        KubernetesClientException last = null;
+        RuntimeException last = null;
         for (int attempt = 1; attempt <= 3; attempt++) {
             try {
-                k8sClient.network().v1().ingresses().inNamespace(namespace).withName(canaryIngressName(app)).delete();
+                router.closeCanary(namespace, app);
                 k8sClient.services().inNamespace(namespace).withName(canaryServiceName(app)).delete();
                 return;
-            } catch (KubernetesClientException e) {
+            } catch (RuntimeException e) {
+                // k8s API 실패와 Router 모듈(HTTP) 실패 모두 잠깐일 수 있다
                 last = e;
                 sleep(200L * attempt);
             }
@@ -182,10 +196,7 @@ public class CanaryAnalysis {
         if (ready == null || ready < 1) {
             return "previous " + plan.previous() + " has no ready pods";
         }
-        Ingress main = k8sClient.network().v1().ingresses().inNamespace(namespace).withName(app + "-ingress").get();
-        boolean sameHost = main != null && main.getSpec() != null && main.getSpec().getRules() != null
-                && main.getSpec().getRules().stream().anyMatch(rule -> host.equals(rule.getHost()));
-        if (!sameHost) {
+        if (!router.routes(namespace, app, host)) {
             return "no ingress for " + host + " yet";
         }
         return null;
@@ -295,10 +306,6 @@ public class CanaryAnalysis {
 
     static String canaryServiceName(String app) {
         return app + "-canary-svc";
-    }
-
-    static String canaryIngressName(String app) {
-        return app + "-canary-ingress";
     }
 
     private static String percent(double rate) {

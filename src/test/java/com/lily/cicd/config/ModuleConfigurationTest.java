@@ -18,7 +18,7 @@ class ModuleConfigurationTest {
     @Test
     void 전략_이름이_없으면_블루그린이다() {
         assertInstanceOf(BlueGreenDeploymentStrategy.class,
-                configuration.deploymentStrategy(null, new DeployProperties()));
+                configuration.deploymentStrategy(null, new DeployProperties(), null));
     }
 
     @Test
@@ -26,7 +26,7 @@ class ModuleConfigurationTest {
         DeployProperties properties = new DeployProperties();
         properties.setStrategy("canary");
         assertInstanceOf(CanaryDeploymentStrategy.class,
-                configuration.deploymentStrategy(null, properties));
+                configuration.deploymentStrategy(null, properties, null));
     }
 
     @Test
@@ -34,7 +34,7 @@ class ModuleConfigurationTest {
         DeployProperties properties = new DeployProperties();
         properties.setStrategy("rolling");
         assertThrows(IllegalArgumentException.class,
-                () -> configuration.deploymentStrategy(null, properties));
+                () -> configuration.deploymentStrategy(null, properties, null));
     }
 
     @Test

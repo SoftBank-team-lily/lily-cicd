@@ -1,6 +1,8 @@
 package com.lily.cicd.deploy;
 
 import com.lily.cicd.module.DatabaseProvisioner;
+import com.lily.cicd.module.NginxIngressRouter;
+import com.lily.cicd.module.TrafficRouter;
 import com.lily.cicd.release.DeployLock;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.client.KubernetesClient;
@@ -33,9 +35,18 @@ public class AppRemover {
     private final DeployLock lock;
     private final DeployProgress progress;
     private final DatabaseProvisioner databaseProvisioner;
+    /** 트래픽 입구(라우트·canary Ingress)는 Router 모듈이 지운다 */
+    private final TrafficRouter router;
 
+    /** Ingress 를 직접 쓰는 기본 Router 로 */
     public AppRemover(KubernetesClient k8s, DeployLock lock, DeployProgress progress,
                       DatabaseProvisioner databaseProvisioner) {
+        this(k8s, lock, progress, databaseProvisioner, new NginxIngressRouter(k8s));
+    }
+
+    public AppRemover(KubernetesClient k8s, DeployLock lock, DeployProgress progress,
+                      DatabaseProvisioner databaseProvisioner, TrafficRouter router) {
+        this.router = router;
         this.k8s = k8s;
         this.lock = lock;
         this.progress = progress;
@@ -47,11 +58,7 @@ public class AppRemover {
         try (DeployLock.Handle ignored = lock.acquire(namespace, appName, "delete")) {
             List<String> deleted = new ArrayList<>();
             // 트래픽 입구부터 끊는다
-            for (String name : List.of(appName + "-ingress", appName + "-canary-ingress")) {
-                if (!k8s.network().v1().ingresses().inNamespace(namespace).withName(name).delete().isEmpty()) {
-                    deleted.add("ingress/" + name);
-                }
-            }
+            deleted.addAll(router.remove(namespace, appName));
             for (HasMetadata d : k8s.apps().deployments().inNamespace(namespace).withLabel("app", appName).list().getItems()) {
                 k8s.apps().deployments().inNamespace(namespace).withName(d.getMetadata().getName()).delete();
                 deleted.add("deployment/" + d.getMetadata().getName());
