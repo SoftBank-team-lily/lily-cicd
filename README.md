@@ -286,6 +286,7 @@ DB, Router, Logging, Monitoring 모듈은 배포 절차를 직접 알 필요 없
 
 * 슬롯 Secret의 `DB_URL`에 `currentSchema=public_{마이그레이션 이름}`이 들어가서 앱 코드는 바뀌지 않습니다.
 * `POST /api/deployments/{appName}/schema/complete`: 롤백 창을 바로 닫습니다. 이후에는 스키마를 되돌릴 수 없습니다.
+* 멀티클라우드(AWS + GCP) 앱은 DB가 GCP Cloud SQL 하나입니다. pgroll start·complete·rollback은 GCP 쪽 lily-cicd만 하고, AWS 쪽은 `databaseEnv` + `followPgroll`로 받아 `pgroll latest`의 버전 스키마로 접속만 합니다. AWS 쪽 릴리스에는 스키마 버전을 남기지 않아 그쪽 롤백은 앱만 되돌립니다. 그래서 lily-builder는 AWS를 먼저, GCP를 나중에 되돌립니다.
 
 ## 배포 요청
 
@@ -297,9 +298,10 @@ DB, Router, Logging, Monitoring 모듈은 배포 절차를 직접 알 필요 없
 | `appName`, `namespace`, `domain`, `appVersion`, `imagePullSecret`, `extraEnv` | 생략하면 설정 기본값 |
 | `readinessPath`, `livenessPath` | `tcp`를 주면 HTTP 대신 포트가 열렸는지만 봅니다 |
 | `database` | `postgres` / `mysql`. DB 모듈로 테넌트 DB를 만들고 접속 정보를 슬롯 Secret에 넣습니다 |
-| `databaseEnv` | DB 접속 환경변수를 직접 줍니다 (온프레미스 DB를 역방향 터널로 쓰는 대기 배포). DB 모듈을 부르지 않습니다. `database`와 같이 보내면 400 |
+| `databaseEnv` | DB 접속 환경변수를 직접 줍니다 (온프레미스 DB를 역방향 터널로 쓰는 대기 배포, 멀티클라우드의 AWS 쪽). DB 모듈을 부르지 않습니다. `database`와 같이 보내면 400 |
+| `followPgroll` | `databaseEnv`와 같이. 그 DB를 다른 클라우드의 lily-cicd가 pgroll로 관리합니다. 최신 버전 스키마로 접속만 하고 스키마 버전은 기록하지 않습니다. `databaseEnv` 없이 보내면 400 |
 | `host` | 생략하면 `{appName}.{domain}` |
-| `aliases` | `host`와 같은 Service로 보내는 추가 Ingress 호스트. lily-builder 엣지 Worker가 PC 장애 때 보내는 `{app}-cloud.{존}` |
+| `aliases` | `host`와 같은 Service로 보내는 추가 Ingress 호스트. lily-builder 엣지 Worker가 PC 장애 때 보내는 `{app}-cloud.{존}`, 멀티클라우드 앱의 `{app}-aws.{존}`·`{app}-gcp.{존}` |
 | `migrations` | 파일명 → SQL. pgroll 파일(`.yaml`/`.json`)이면 pgroll로 적용합니다. 둘을 섞으면 400 |
 | `canaryPath` | Canary 판정 경로. 생략하면 readiness 경로 |
 
