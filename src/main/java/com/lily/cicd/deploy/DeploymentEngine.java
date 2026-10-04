@@ -168,6 +168,9 @@ public class DeploymentEngine {
         if (givenDatabase && !isBlank(command.database())) {
             throw new IllegalArgumentException("databaseEnv 는 database 와 같이 보낼 수 없다");
         }
+        if (command.followPgroll() && !givenDatabase) {
+            throw new IllegalArgumentException("followPgroll 은 databaseEnv 와 같이 보내야 한다");
+        }
         List<String> logs = new ArrayList<>();
         String namespace = firstNonBlank(command.namespace(), properties.getNamespace());
         String appName = command.appName();
@@ -218,6 +221,15 @@ public class DeploymentEngine {
                 if (!scripts.isEmpty()) {
                     appEnv = new LinkedHashMap<>(databaseEnv);
                     appEnv.put(APP_FLYWAY_ENV, "false");
+                } else if (pgroll != null && command.followPgroll()) {
+                    // 멀티클라우드 두 번째 클라우드: DB 를 가진 클라우드가 pgroll 을 돌린다. 최신 버전 스키마로 접속만 한다.
+                    // 스키마 버전은 기록하지 않아서 이 클러스터의 롤백은 앱만 되돌린다 (스키마는 DB 쪽 클라우드가 되돌린다)
+                    Optional<String> latest = pgroll.latest(databaseEnv);
+                    if (latest.isPresent()) {
+                        appEnv = PgrollSchema.appEnv(databaseEnv, latest.get());
+                        logs.add("schema: pgroll 은 DB 를 가진 클라우드가 관리한다. "
+                                + PgrollSet.versionSchema(latest.get()) + " 로 접속");
+                    }
                 } else if (pgroll != null && "postgres".equals(command.database())) {
                     // 마이그레이션 파일이 없는 커밋도 pgroll 로 관리하던 DB 면 최신 버전 스키마로 붙는다
                     Optional<String> latest = pgroll.latest(databaseEnv);
